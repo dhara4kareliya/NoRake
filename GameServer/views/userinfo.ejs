@@ -1,0 +1,12 @@
+<h2>User info for <%=name%></h2>
+<div>
+    <div>Avatar: <%=avatar%><img src="/avatar/<%=avatar%>" height="100"></div>
+    <div>Cash: <%=cash%></div>
+    <div>Chip: <%=chips%></div>
+
+    <div><a href="/table/list">Show tables</a></div>
+    <!-- <div><a href="/game/play?user=<%=token%>&t=test_thread&gs=<%=encodeURIComponent(gs)%>" target="_blank">Test</a></div> -->
+    <!-- <div><a href="/play?u=<%=token%>&t=test_thread" target="_blank">Test</a></div> -->
+    <div><a href="/play?t=<%=token%>" target="_blank">Test</a></div>
+    <div><a href="/user/logout">Logout</a></div>
+</div>

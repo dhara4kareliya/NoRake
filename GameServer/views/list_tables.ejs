@@ -1,0 +1,39 @@
+<h2>List tables</h2>
+<% if (!locals.tables || !locals.tables.length) { %>
+    <div>No tables</div>
+<% } else { %>
+    <table border="1">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Server</th>
+                <th>Port</th>
+                <th>Name</th>
+                <th>Seat Limit</th>
+                <th>Small Blind</th>
+                <th>Big Blind</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% for (let table of locals.tables) { %>
+                <tr>
+                    <td><%= table.opts.id %></td>
+                    <td><%= table.server.host %></td>
+                    <td><%= table.server.port %></td>
+                    <td><%= table.opts.name %></td>
+                    <td><%= table.opts.numberOfSeats %></td>
+                    <td><%= table.opts.smallBlind %></td>
+                    <td><%= table.opts.bigBlind %></td>
+                    <td>
+                        <a href="/table/play/<%=table.opts.token%>" target="_blank">Play</a>
+                        | <a href="/table/delete/<%=table.opts.token%>">Delete</a>
+                    </td>
+                </tr>
+            <% } %>
+        </tbody>
+    </table>
+<% } %>
+<div>
+    <a href="/table/create">Create new table</a>
+</div>
