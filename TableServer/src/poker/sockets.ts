@@ -445,10 +445,10 @@ class SocketPlayer extends Player {
             return ack?.(JSON.stringify({ encryptText: encryptText }));
         }
     }
-    private onRequestSubmitReport = async (arg: {type: string, description:string, reporter:string}, ack: any) => {
-        //  const seat = this.table!.getSeatAt(arg.seatIndex);
+    private onRequestSubmitReport = async (arg: {type: string, description:string, seat:number}, ack: any) => {
+         const seat = this.table!.getSeatAt(arg.seat);
 
-        const { status, msg } = await this.room!.game.SubmitReport(this.room!.id, this._id, arg.type, arg.description, this.table!.round, arg.reporter);
+        const { status, msg } = await this.room!.game.SubmitReport(this.room!.id, this._id, arg.type, arg.description, this.table!.round, seat.player!.id);
 
         return ack?.(JSON.stringify({ status: status, msg:msg }));
     }
