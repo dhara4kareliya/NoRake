@@ -9,9 +9,8 @@ import { forEach, values } from 'lodash';
 import { delay } from '../services/utils';
 
 export interface TableOptions {
-    id: string;
+    id: number;
     name: string;
-    created_at: string;
     gameType: string;
     numberOfSeats: number;
     smallBlind: number;
@@ -35,7 +34,6 @@ export interface SideBetOptions {
 }
 
 export interface TablePlayer {
-    id:string;
     name: string;
     avatar: string;
     created_at:string;
@@ -93,9 +91,9 @@ export type TableSeat = {
 };
 
 export interface TableSettings {
-    id: string;
+    id: number;
     name: string;
-    created_at: string;
+    gameType:string;
     numberOfSeats: number;
     smallBlind: number;
     bigBlind?: number;
@@ -298,7 +296,7 @@ export abstract class Table extends EventEmitter {
         return {
             id: this.options.id,
             name: this.options.name,
-            created_at: this.options.created_at,
+            gameType:this.options.gameType,
             numberOfSeats: this.options.numberOfSeats,
             smallBlind: this._smallBlind!,
             bigBlind: this._bigBlind,
@@ -1082,7 +1080,17 @@ export abstract class Table extends EventEmitter {
         });
         console.log(removeCards);
         const deckCards  = this._context.getNewDeck.filter(card => !removeCards.includes(card));
-        if(RoundState.Flop === this._context.state)
+        if(RoundState.HoleCards === this._context.state){
+            seats.forEach(seat => {
+                var selectedCards = ["AC","AH","AD","AS"];
+                if(seat.context.cards!.find((palyerCard) => selectedCards.includes(palyerCard)) !== undefined)
+                {
+                    seat.winPercentage = 66;
+                }
+            });
+            return true;
+        }
+        else if(RoundState.Flop === this._context.state)
         {
             totalCards = deckCards.length * (deckCards.length - 1);
             const flopCards = deckCards;

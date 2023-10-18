@@ -719,18 +719,18 @@ export class GameService {
                 params.append('user_token', token);
 
                 const res = await this.client.post(url, params);
-                this.logger.debug(`GameService: Win Insurance status: ${url}, {${token}}`);
+                this.logger.debug(`GameService: Auto Fold Info status: ${url}, {${token}}`);
 
                 if (!Boolean(res.data.status ?? false)) {
                     return {status: false,data:[]};
                 }
 
-                this.logger.debug(`GameService: Win Insurance status: Success.`);
+                this.logger.debug(`GameService: Auto Fold Info status: Success.`);
                 
                 return {status: true,data:JSON.parse(res.data.data)};
             }
             catch (err: any) {
-                this.logger.debug(`GameService: Win Insurance status: Error: `, err);
+                this.logger.debug(`GameService: Auto Fold Info status: Error: `, err);
                 if (err.code === 'ECONNABORTED') {
                     this.table.emit('serverdisconn')
                     continue;

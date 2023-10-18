@@ -479,8 +479,8 @@ export class TournamentGameController {
         }
 
         const delayedHours = Math.floor((startTime - now) / 60 / 1000);
-        const delayedMs = (startTime - now) % (60 * 1000) - 57;
-        for (let i = 0; i < delayedHours-1; ++i) {
+        const delayedMs = (startTime - now) % (60 * 1000);
+        for (let i = 0; i < delayedHours; ++i) {
             await delay(60 * 1000);
         }
 

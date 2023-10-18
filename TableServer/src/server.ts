@@ -27,9 +27,8 @@ export type ServerOptions = {
     token: string,
     lostTimeout?: number,
 
-    id: string,
+    id: number,
     name: string,
-    created_at:string,
     gameType: string,
     numberOfSeats: number,
     smallBlind: number,
@@ -111,7 +110,6 @@ export async function createServer(opts: ServerOptions) {
         const tableOptions = {
             id: opts.id,
             name: opts.name,
-            created_at: opts.created_at,
             gameType: opts.gameType,
             numberOfSeats: opts.numberOfSeats,
             smallBlind: opts.smallBlind,

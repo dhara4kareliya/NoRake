@@ -9,9 +9,8 @@ const options: ServerOptions = {
 
     token: 'test_server',
     gameType: 'nlh',
-    id: "1",
+    id: 1,
     name: 'TexasHoldem',
-    created_at: 'sep 9',
     numberOfSeats: 9,
     smallBlind: 1,
     bigBlind: 2,

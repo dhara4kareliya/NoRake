@@ -8,7 +8,6 @@ import { TimeOptions, TournamentTable } from '../poker/tournament';
 import { TableSeatState } from '../poker/table';
 import { SocketLobby } from '../poker/sockets';
 import { delay } from '../services/utils';
-import moment, { duration } from 'moment';
 
 function destroy(req: Request, res: Response, next: NextFunction) {
     process.exit();
@@ -207,12 +206,6 @@ function tournamentNextLevel(req: Request, res: Response, next: NextFunction) {
     res.json({status: true});
 }
 
-function getTime(req: Request, res: Response, next: NextFunction) {
-    let now = moment().valueOf();
-
-    res.json({status: new Date(now).toString()});
-}
-
 function getTournamentTableStatus(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
     const currentLevelOption = (<TournamentTable>(room.table)).currentLevelOption;
@@ -264,7 +257,6 @@ export default express.Router()
         })
     ]
 )
-.get('/getTime',getTime)
 .get('/destroy', destroy)
 .get('/options', options)
 .get('/pause', pause)

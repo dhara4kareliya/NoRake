@@ -409,7 +409,6 @@ class SocketPlayer extends Player {
 
     private sendInfo() {
         const info = {
-            id: this._id,
             name: this._name,
             avatar: this._avatar,
             globalBalance: this._globalBalance,
@@ -448,7 +447,7 @@ class SocketPlayer extends Player {
     private onRequestSubmitReport = async (arg: {type: string, description:string, seat:number}, ack: any) => {
          const seat = this.table!.getSeatAt(arg.seat);
 
-        const { status, msg } = await this.room!.game.SubmitReport(this.room!.id, this._id, arg.type, arg.description, this.table!.round, seat.player!.id);
+        const { status, msg } = await this.room!.game.SubmitReport(this.room!.id, this._id, arg.type, arg.description, this.table!.round, (seat!.player as Player).id);
 
         return ack?.(JSON.stringify({ status: status, msg:msg }));
     }
@@ -757,7 +756,7 @@ class SocketPlayer extends Player {
             seats: status.seats.map((seat, index) => ({
                 ...seat,
                 state: TableSeatState[seat.state],
-                player: !seat.player ? undefined : { name: seat.player.name, avatar: seat.player.avatar, created_at:seat.player.created_at, id:seat.player.id },
+                player: !seat.player ? undefined : { name: seat.player.name, avatar: seat.player.avatar, created_at:seat.player.created_at },
                 // player should not to know about other's cards
                 cards: showdownSeats.has(index) ? seat.cards : seat.cards?.map(() => '?'),
                 handRank: showdownSeats.has(index) ? seat.handRank : undefined,

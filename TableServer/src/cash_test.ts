@@ -5,9 +5,8 @@ const options: ServerOptions = {
 
     token: 'test_server',
     
-    id: "1",
+    id: 1,
     name: 'TexasHoldem',
-    created_at:"sep 9",
     gameType: 'plo',
     numberOfSeats: 9,
     smallBlind: 10,
