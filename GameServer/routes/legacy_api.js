@@ -21,21 +21,20 @@ const apis = {
         const token = String(req.query.t || req.body.t)
         if (!token)
             return next(new Error('No user param'))
-        
+
         const userToken = is_bot == 'true' ? token : get_threads(req.app).getUserToken(req.query.t)
 
         // get_users(req.app).getUserWithThread(token)
         get_users(req.app).getInfo(userToken)
-        .then(user => res.json({
-            status: true,
-            nick_name: user.name,
-            avatar: user.avatar,
-            main_balance: user.cash,
-            chips: user.chips,
-            user_id: user.token,
-            created_at:"Sep 2023"
-        }))
-        .catch(next)
+            .then(user => res.json({
+                status: true,
+                nick_name: user.name,
+                avatar: user.avatar,
+                main_balance: user.cash,
+                chips: user.chips,
+                user_id: user.token,
+            }))
+            .catch(next)
     },
 
     seat(req, res, next) {
@@ -51,14 +50,14 @@ const apis = {
         const token = String(req.query.user || req.body.user)
         if (!token)
             return next(new Error('No user param'))
-    
+
         console.log(`API sit: table:${table}, seat:${seat}, user:${token}`)
 
         get_users(req.app).getInfo(token)
-        .then(user => res.json({
-            status: true,
-        }))
-        .catch(next)
+            .then(user => res.json({
+                status: true,
+            }))
+            .catch(next)
     },
 
     deposit(req, res, next) {
@@ -70,20 +69,20 @@ const apis = {
         const token = String(req.query.user || req.body.user)
         if (!token)
             return next(new Error('No user param'))
-    
+
         const amount = String(req.query.deposit || req.body.deposit || 0)
 
         console.log(`API deposit: table:${table}, user:${token}, amount:$${amount}`)
-        
-        get_users(req.app).getInfo(token)
-        .then(user => {
-            if (amount > user.cash)
-                throw new Error(`Insufficient cash to deposit.`)
 
-            user.cash -= amount
-            res.json({ status: true, cash: user.cash })
-        })
-        .catch(next)
+        get_users(req.app).getInfo(token)
+            .then(user => {
+                if (amount > user.cash)
+                    throw new Error(`Insufficient cash to deposit.`)
+
+                user.cash -= amount
+                res.json({ status: true, cash: user.cash })
+            })
+            .catch(next)
     },
 
     leave(req, res, next) {
@@ -95,17 +94,17 @@ const apis = {
         const token = String(req.query.user || req.body.user)
         if (!token)
             return next(new Error('No user param'))
-    
+
         const leftBalance = Number(req.query.left_balance || req.body.left_balance || 0)
 
         console.log(`API leave: table:${table}, user:${token}, left_balance:$${leftBalance}`)
-        
+
         get_users(req.app).getInfo(token)
-        .then(user => {
-            user.cash += leftBalance
-            res.json({ status: true, cash: user.cash })
-        })
-        .catch(next)
+            .then(user => {
+                user.cash += leftBalance
+                res.json({ status: true, cash: user.cash })
+            })
+            .catch(next)
     },
 
     end_round(req, res, next) {
@@ -121,8 +120,8 @@ const apis = {
 
         console.log(`API end_round: table:${table}, round:${round}, rake:$${rake}`)
         console.log(`API end_round: balances:${JSON.stringify(balances)}`)
-        // console.log(`API end_round: roundLog:${JSON.stringify(roundLog)}`)
-        
+            // console.log(`API end_round: roundLog:${JSON.stringify(roundLog)}`)
+
         res.json({ status: true })
     },
 
@@ -130,27 +129,22 @@ const apis = {
         const thread = get_threads(req.app).find(req.query.t)
         if (!thread)
             return next(new Error('Thread not found'))
-    
+
         res.json({ status: true, ...thread.table })
-    }, 
-    user_to_tips(req,res,next){
-        res.json({ status: true })
     },
-    table_report(req,res,next){
-        res.json({ status: true })
-    },
+
     get_balance(req, res, next) {
         const token = String(req.query.user || req.body.user)
         if (!token)
             return next(new Error('No user param'))
 
         console.log(`API get_balance: user:${token}`)
-        
+
         get_users(req.app).getInfo(token)
-        .then(user => {
-            res.json({ status: true, balance: user.cash })
-        })
-        .catch(next)
+            .then(user => {
+                res.json({ status: true, balance: user.cash })
+            })
+            .catch(next)
     },
 
     get_mt_user(req, res, next) {
@@ -158,25 +152,896 @@ const apis = {
         if (!token)
             return next(new Error('No user param'))
 
-        const tables =  get_threads(req.app).getTablesByUserToken(token)
+        const tables = get_threads(req.app).getTablesByUserToken(token)
 
-        res.json({status : true, tables: tables})
+        res.json({ status: true, tables: tables })
     },
 
-    
+
     get_global_balance(req, res, next) {
-        res.json({status: true, balance: 10000})
-    }, 
+        res.json({ status: true, balance: 10000 })
+    },
 
     user_wallet_to_table_wallet(req, res, next) {
-        res.json({status: true, transfer_amount: 5000, update_user_amount: 10000});
+        res.json({ status: true, transfer_amount: 5000, update_user_amount: 10000 });
+    },
+    insurance(req, res, next) {
+        res.json({ status: true });
+    },
+    win_insurance(req, res, next) {
+        res.json({ status: true });
+    },
+    user_to_tips(req, res, next) {
+        res.json({ status: true });
+    },
+    auto_fold(req, res, next) {
+        res.json({
+            "status": true,
+            "data": JSON.stringify({
+                "small_blind": {
+                    "22": true,
+                    "33": true,
+                    "44": true,
+                    "55": true,
+                    "66": true,
+                    "88": true,
+                    "99": true,
+                    "AA": true,
+                    "AKs": true,
+                    "AQs": true,
+                    "AJs": true,
+                    "ATs": true,
+                    "A9s": true,
+                    "A8s": true,
+                    "A7s": true,
+                    "A6s": true,
+                    "A5s": true,
+                    "A4s": true,
+                    "A3s": true,
+                    "A2s": true,
+                    "AKo": true,
+                    "KK": true,
+                    "KQs": true,
+                    "KJs": true,
+                    "KTs": true,
+                    "K9s": true,
+                    "K8s": true,
+                    "K7s": true,
+                    "K6s": true,
+                    "K5s": true,
+                    "K4s": true,
+                    "K3s": true,
+                    "K2s": true,
+                    "AQo": true,
+                    "KQo": true,
+                    "QQ": true,
+                    "QJs": true,
+                    "QTs": true,
+                    "Q9s": true,
+                    "Q8s": true,
+                    "Q7s": true,
+                    "Q6s": true,
+                    "Q5s": true,
+                    "Q4s": true,
+                    "Q3s": true,
+                    "Q2s": false,
+                    "AJo": false,
+                    "KJo": false,
+                    "QJo": false,
+                    "JJ": false,
+                    "JTs": false,
+                    "J9s": false,
+                    "J8s": true,
+                    "J7s": false,
+                    "J6s": false,
+                    "J5s": false,
+                    "J4s": false,
+                    "J3s": false,
+                    "J2s": false,
+                    "ATo": false,
+                    "KTo": false,
+                    "QTo": false,
+                    "JTo": false,
+                    "TT": true,
+                    "T9s": true,
+                    "T8s": true,
+                    "T7s": true,
+                    "T6s": true,
+                    "T5s": true,
+                    "T4s": true,
+                    "T3s": true,
+                    "T2s": true,
+                    "A9o": true,
+                    "K9o": true,
+                    "Q9o": true,
+                    "J9o": true,
+                    "T9o": true,
+                    "98s": true,
+                    "97s": true,
+                    "96s": true,
+                    "95s": true,
+                    "94s": true,
+                    "93s": true,
+                    "92s": true,
+                    "A8o": true,
+                    "K8o": true,
+                    "Q8o": true,
+                    "J8o": true,
+                    "T8o": true,
+                    "98o": true,
+                    "87s": true,
+                    "86s": true,
+                    "85s": true,
+                    "84s": true,
+                    "83s": true,
+                    "82s": true,
+                    "A7o": true,
+                    "K7o": true,
+                    "Q7o": true,
+                    "J7o": true,
+                    "T7o": true,
+                    "97o": true,
+                    "87o": true,
+                    "77s": true,
+                    "76s": true,
+                    "75s": true,
+                    "74s": true,
+                    "73s": true,
+                    "72s": true,
+                    "A6o": true,
+                    "K6o": true,
+                    "Q6o": true,
+                    "J6o": true,
+                    "T6o": true,
+                    "96o": true,
+                    "86o": true,
+                    "76o": true,
+                    "65s": true,
+                    "64s": true,
+                    "63s": true,
+                    "62s": true,
+                    "A5o": true,
+                    "K5o": true,
+                    "Q5o": true,
+                    "J5o": true,
+                    "T5o": true,
+                    "95o": true,
+                    "85o": true,
+                    "75o": true,
+                    "65o": true,
+                    "54s": true,
+                    "53s": true,
+                    "52s": true,
+                    "A4o": true,
+                    "K4o": true,
+                    "Q4o": true,
+                    "J4o": true,
+                    "T4o": true,
+                    "94o": true,
+                    "84o": true,
+                    "74o": false,
+                    "64o": false,
+                    "54o": false,
+                    "43s": false,
+                    "42s": false,
+                    "A3o": false,
+                    "K3o": false,
+                    "Q3o": false,
+                    "J3o": false,
+                    "T3o": false,
+                    "93o": false,
+                    "83o": false,
+                    "73o": false,
+                    "63o": false,
+                    "53o": false,
+                    "43o": false,
+                    "32s": false,
+                    "A2o": false,
+                    "K2o": false,
+                    "Q2o": false,
+                    "J2o": false,
+                    "T2o": false,
+                    "92o": false,
+                    "82o": false,
+                    "72o": false,
+                    "62o": false,
+                    "52o": false,
+                    "42o": false,
+                    "32o": false
+                },
+                "big_blind": {
+                    "22": false,
+                    "33": false,
+                    "44": false,
+                    "55": false,
+                    "66": false,
+                    "88": false,
+                    "99": false,
+                    "AA": false,
+                    "AKs": false,
+                    "AQs": false,
+                    "AJs": false,
+                    "ATs": false,
+                    "A9s": false,
+                    "A8s": false,
+                    "A7s": false,
+                    "A6s": false,
+                    "A5s": false,
+                    "A4s": false,
+                    "A3s": false,
+                    "A2s": false,
+                    "AKo": false,
+                    "KK": false,
+                    "KQs": false,
+                    "KJs": false,
+                    "KTs": false,
+                    "K9s": false,
+                    "K8s": false,
+                    "K7s": false,
+                    "K6s": false,
+                    "K5s": false,
+                    "K4s": false,
+                    "K3s": false,
+                    "K2s": false,
+                    "AQo": false,
+                    "KQo": false,
+                    "QQ": false,
+                    "QJs": false,
+                    "QTs": false,
+                    "Q9s": false,
+                    "Q8s": false,
+                    "Q7s": false,
+                    "Q6s": false,
+                    "Q5s": false,
+                    "Q4s": false,
+                    "Q3s": false,
+                    "Q2s": false,
+                    "AJo": false,
+                    "KJo": false,
+                    "QJo": false,
+                    "JJ": false,
+                    "JTs": false,
+                    "J9s": false,
+                    "J8s": false,
+                    "J7s": false,
+                    "J6s": false,
+                    "J5s": false,
+                    "J4s": false,
+                    "J3s": false,
+                    "J2s": false,
+                    "ATo": false,
+                    "KTo": false,
+                    "QTo": false,
+                    "JTo": false,
+                    "TT": false,
+                    "T9s": false,
+                    "T8s": false,
+                    "T7s": false,
+                    "T6s": false,
+                    "T5s": false,
+                    "T4s": false,
+                    "T3s": false,
+                    "T2s": false,
+                    "A9o": false,
+                    "K9o": false,
+                    "Q9o": false,
+                    "J9o": false,
+                    "T9o": false,
+                    "98s": false,
+                    "97s": false,
+                    "96s": false,
+                    "95s": false,
+                    "94s": false,
+                    "93s": false,
+                    "92s": false,
+                    "A8o": false,
+                    "K8o": false,
+                    "Q8o": false,
+                    "J8o": false,
+                    "T8o": false,
+                    "98o": false,
+                    "87s": false,
+                    "86s": false,
+                    "85s": false,
+                    "84s": false,
+                    "83s": false,
+                    "82s": false,
+                    "A7o": false,
+                    "K7o": false,
+                    "Q7o": false,
+                    "J7o": false,
+                    "T7o": false,
+                    "97o": false,
+                    "87o": false,
+                    "77s": false,
+                    "76s": false,
+                    "75s": false,
+                    "74s": false,
+                    "73s": false,
+                    "72s": false,
+                    "A6o": false,
+                    "K6o": false,
+                    "Q6o": false,
+                    "J6o": false,
+                    "T6o": false,
+                    "96o": false,
+                    "86o": false,
+                    "76o": false,
+                    "65s": false,
+                    "64s": false,
+                    "63s": false,
+                    "62s": false,
+                    "A5o": false,
+                    "K5o": false,
+                    "Q5o": false,
+                    "J5o": false,
+                    "T5o": false,
+                    "95o": false,
+                    "85o": false,
+                    "75o": false,
+                    "65o": false,
+                    "54s": false,
+                    "53s": false,
+                    "52s": false,
+                    "A4o": false,
+                    "K4o": false,
+                    "Q4o": false,
+                    "J4o": false,
+                    "T4o": false,
+                    "94o": false,
+                    "84o": false,
+                    "74o": false,
+                    "64o": false,
+                    "54o": false,
+                    "43s": false,
+                    "42s": false,
+                    "A3o": false,
+                    "K3o": false,
+                    "Q3o": false,
+                    "J3o": false,
+                    "T3o": false,
+                    "93o": false,
+                    "83o": false,
+                    "73o": false,
+                    "63o": false,
+                    "53o": false,
+                    "43o": false,
+                    "32s": false,
+                    "A2o": false,
+                    "K2o": false,
+                    "Q2o": false,
+                    "J2o": false,
+                    "T2o": false,
+                    "92o": false,
+                    "82o": false,
+                    "72o": false,
+                    "62o": false,
+                    "52o": false,
+                    "42o": false,
+                    "32o": false
+                },
+                "early_position": {
+                    "22": false,
+                    "33": false,
+                    "44": false,
+                    "55": false,
+                    "66": false,
+                    "88": false,
+                    "99": false,
+                    "AA": false,
+                    "AKs": false,
+                    "AQs": false,
+                    "AJs": false,
+                    "ATs": false,
+                    "A9s": false,
+                    "A8s": false,
+                    "A7s": false,
+                    "A6s": false,
+                    "A5s": false,
+                    "A4s": false,
+                    "A3s": false,
+                    "A2s": false,
+                    "AKo": false,
+                    "KK": false,
+                    "KQs": false,
+                    "KJs": false,
+                    "KTs": false,
+                    "K9s": false,
+                    "K8s": false,
+                    "K7s": false,
+                    "K6s": false,
+                    "K5s": false,
+                    "K4s": false,
+                    "K3s": false,
+                    "K2s": false,
+                    "AQo": false,
+                    "KQo": false,
+                    "QQ": false,
+                    "QJs": false,
+                    "QTs": false,
+                    "Q9s": false,
+                    "Q8s": false,
+                    "Q7s": false,
+                    "Q6s": false,
+                    "Q5s": false,
+                    "Q4s": false,
+                    "Q3s": false,
+                    "Q2s": false,
+                    "AJo": false,
+                    "KJo": false,
+                    "QJo": false,
+                    "JJ": false,
+                    "JTs": false,
+                    "J9s": false,
+                    "J8s": false,
+                    "J7s": false,
+                    "J6s": false,
+                    "J5s": false,
+                    "J4s": false,
+                    "J3s": false,
+                    "J2s": false,
+                    "ATo": false,
+                    "KTo": false,
+                    "QTo": false,
+                    "JTo": false,
+                    "TT": false,
+                    "T9s": false,
+                    "T8s": false,
+                    "T7s": false,
+                    "T6s": false,
+                    "T5s": false,
+                    "T4s": false,
+                    "T3s": false,
+                    "T2s": false,
+                    "A9o": false,
+                    "K9o": false,
+                    "Q9o": false,
+                    "J9o": false,
+                    "T9o": false,
+                    "98s": false,
+                    "97s": false,
+                    "96s": false,
+                    "95s": false,
+                    "94s": false,
+                    "93s": false,
+                    "92s": false,
+                    "A8o": false,
+                    "K8o": false,
+                    "Q8o": false,
+                    "J8o": false,
+                    "T8o": false,
+                    "98o": false,
+                    "87s": false,
+                    "86s": false,
+                    "85s": false,
+                    "84s": false,
+                    "83s": false,
+                    "82s": false,
+                    "A7o": false,
+                    "K7o": false,
+                    "Q7o": false,
+                    "J7o": false,
+                    "T7o": false,
+                    "97o": false,
+                    "87o": false,
+                    "77s": false,
+                    "76s": false,
+                    "75s": false,
+                    "74s": false,
+                    "73s": false,
+                    "72s": false,
+                    "A6o": false,
+                    "K6o": false,
+                    "Q6o": false,
+                    "J6o": false,
+                    "T6o": false,
+                    "96o": false,
+                    "86o": false,
+                    "76o": false,
+                    "65s": false,
+                    "64s": false,
+                    "63s": false,
+                    "62s": false,
+                    "A5o": false,
+                    "K5o": false,
+                    "Q5o": false,
+                    "J5o": false,
+                    "T5o": false,
+                    "95o": false,
+                    "85o": false,
+                    "75o": false,
+                    "65o": false,
+                    "54s": false,
+                    "53s": false,
+                    "52s": false,
+                    "A4o": false,
+                    "K4o": false,
+                    "Q4o": false,
+                    "J4o": false,
+                    "T4o": false,
+                    "94o": false,
+                    "84o": false,
+                    "74o": false,
+                    "64o": false,
+                    "54o": false,
+                    "43s": false,
+                    "42s": false,
+                    "A3o": false,
+                    "K3o": false,
+                    "Q3o": false,
+                    "J3o": false,
+                    "T3o": false,
+                    "93o": false,
+                    "83o": false,
+                    "73o": false,
+                    "63o": false,
+                    "53o": false,
+                    "43o": false,
+                    "32s": false,
+                    "A2o": false,
+                    "K2o": false,
+                    "Q2o": false,
+                    "J2o": false,
+                    "T2o": false,
+                    "92o": false,
+                    "82o": false,
+                    "72o": false,
+                    "62o": false,
+                    "52o": false,
+                    "42o": false,
+                    "32o": false
+                },
+                "middle_position": {
+                    "22": false,
+                    "33": false,
+                    "44": false,
+                    "55": false,
+                    "66": false,
+                    "88": false,
+                    "99": false,
+                    "AA": false,
+                    "AKs": false,
+                    "AQs": false,
+                    "AJs": false,
+                    "ATs": false,
+                    "A9s": false,
+                    "A8s": false,
+                    "A7s": false,
+                    "A6s": false,
+                    "A5s": false,
+                    "A4s": false,
+                    "A3s": false,
+                    "A2s": false,
+                    "AKo": false,
+                    "KK": false,
+                    "KQs": false,
+                    "KJs": false,
+                    "KTs": false,
+                    "K9s": false,
+                    "K8s": false,
+                    "K7s": false,
+                    "K6s": false,
+                    "K5s": false,
+                    "K4s": false,
+                    "K3s": false,
+                    "K2s": false,
+                    "AQo": false,
+                    "KQo": false,
+                    "QQ": false,
+                    "QJs": false,
+                    "QTs": false,
+                    "Q9s": false,
+                    "Q8s": false,
+                    "Q7s": false,
+                    "Q6s": false,
+                    "Q5s": false,
+                    "Q4s": false,
+                    "Q3s": false,
+                    "Q2s": false,
+                    "AJo": false,
+                    "KJo": false,
+                    "QJo": false,
+                    "JJ": false,
+                    "JTs": false,
+                    "J9s": false,
+                    "J8s": false,
+                    "J7s": false,
+                    "J6s": false,
+                    "J5s": false,
+                    "J4s": false,
+                    "J3s": false,
+                    "J2s": false,
+                    "ATo": false,
+                    "KTo": false,
+                    "QTo": false,
+                    "JTo": false,
+                    "TT": false,
+                    "T9s": false,
+                    "T8s": false,
+                    "T7s": false,
+                    "T6s": false,
+                    "T5s": false,
+                    "T4s": false,
+                    "T3s": false,
+                    "T2s": false,
+                    "A9o": false,
+                    "K9o": false,
+                    "Q9o": false,
+                    "J9o": false,
+                    "T9o": false,
+                    "98s": false,
+                    "97s": false,
+                    "96s": false,
+                    "95s": false,
+                    "94s": false,
+                    "93s": false,
+                    "92s": false,
+                    "A8o": false,
+                    "K8o": false,
+                    "Q8o": false,
+                    "J8o": false,
+                    "T8o": false,
+                    "98o": false,
+                    "87s": false,
+                    "86s": false,
+                    "85s": false,
+                    "84s": false,
+                    "83s": false,
+                    "82s": false,
+                    "A7o": false,
+                    "K7o": false,
+                    "Q7o": false,
+                    "J7o": false,
+                    "T7o": false,
+                    "97o": false,
+                    "87o": false,
+                    "77s": false,
+                    "76s": false,
+                    "75s": false,
+                    "74s": false,
+                    "73s": false,
+                    "72s": false,
+                    "A6o": false,
+                    "K6o": false,
+                    "Q6o": false,
+                    "J6o": false,
+                    "T6o": false,
+                    "96o": false,
+                    "86o": false,
+                    "76o": false,
+                    "65s": false,
+                    "64s": false,
+                    "63s": false,
+                    "62s": false,
+                    "A5o": false,
+                    "K5o": false,
+                    "Q5o": false,
+                    "J5o": false,
+                    "T5o": false,
+                    "95o": false,
+                    "85o": false,
+                    "75o": false,
+                    "65o": false,
+                    "54s": false,
+                    "53s": false,
+                    "52s": false,
+                    "A4o": false,
+                    "K4o": false,
+                    "Q4o": false,
+                    "J4o": false,
+                    "T4o": false,
+                    "94o": false,
+                    "84o": false,
+                    "74o": false,
+                    "64o": false,
+                    "54o": false,
+                    "43s": false,
+                    "42s": false,
+                    "A3o": false,
+                    "K3o": false,
+                    "Q3o": false,
+                    "J3o": false,
+                    "T3o": false,
+                    "93o": false,
+                    "83o": false,
+                    "73o": false,
+                    "63o": false,
+                    "53o": false,
+                    "43o": false,
+                    "32s": true,
+                    "A2o": true,
+                    "K2o": true,
+                    "Q2o": true,
+                    "J2o": true,
+                    "T2o": true,
+                    "92o": true,
+                    "82o": false,
+                    "72o": false,
+                    "62o": false,
+                    "52o": false,
+                    "42o": false,
+                    "32o": false
+                },
+                "late_position": {
+                    "22": false,
+                    "33": false,
+                    "44": false,
+                    "55": false,
+                    "66": false,
+                    "88": false,
+                    "99": false,
+                    "AA": false,
+                    "AKs": false,
+                    "AQs": false,
+                    "AJs": false,
+                    "ATs": false,
+                    "A9s": false,
+                    "A8s": false,
+                    "A7s": false,
+                    "A6s": false,
+                    "A5s": false,
+                    "A4s": false,
+                    "A3s": false,
+                    "A2s": false,
+                    "AKo": false,
+                    "KK": false,
+                    "KQs": false,
+                    "KJs": false,
+                    "KTs": false,
+                    "K9s": false,
+                    "K8s": false,
+                    "K7s": false,
+                    "K6s": false,
+                    "K5s": false,
+                    "K4s": false,
+                    "K3s": false,
+                    "K2s": false,
+                    "AQo": false,
+                    "KQo": false,
+                    "QQ": false,
+                    "QJs": false,
+                    "QTs": false,
+                    "Q9s": false,
+                    "Q8s": false,
+                    "Q7s": false,
+                    "Q6s": false,
+                    "Q5s": false,
+                    "Q4s": false,
+                    "Q3s": false,
+                    "Q2s": false,
+                    "AJo": false,
+                    "KJo": false,
+                    "QJo": false,
+                    "JJ": false,
+                    "JTs": false,
+                    "J9s": false,
+                    "J8s": false,
+                    "J7s": false,
+                    "J6s": false,
+                    "J5s": false,
+                    "J4s": false,
+                    "J3s": false,
+                    "J2s": false,
+                    "ATo": false,
+                    "KTo": false,
+                    "QTo": false,
+                    "JTo": false,
+                    "TT": false,
+                    "T9s": false,
+                    "T8s": false,
+                    "T7s": false,
+                    "T6s": false,
+                    "T5s": false,
+                    "T4s": false,
+                    "T3s": false,
+                    "T2s": false,
+                    "A9o": false,
+                    "K9o": false,
+                    "Q9o": false,
+                    "J9o": false,
+                    "T9o": false,
+                    "98s": false,
+                    "97s": false,
+                    "96s": false,
+                    "95s": false,
+                    "94s": false,
+                    "93s": false,
+                    "92s": false,
+                    "A8o": false,
+                    "K8o": false,
+                    "Q8o": false,
+                    "J8o": false,
+                    "T8o": false,
+                    "98o": false,
+                    "87s": false,
+                    "86s": false,
+                    "85s": false,
+                    "84s": false,
+                    "83s": false,
+                    "82s": false,
+                    "A7o": false,
+                    "K7o": false,
+                    "Q7o": false,
+                    "J7o": false,
+                    "T7o": false,
+                    "97o": false,
+                    "87o": false,
+                    "77s": false,
+                    "76s": false,
+                    "75s": false,
+                    "74s": false,
+                    "73s": false,
+                    "72s": false,
+                    "A6o": false,
+                    "K6o": false,
+                    "Q6o": false,
+                    "J6o": false,
+                    "T6o": false,
+                    "96o": false,
+                    "86o": false,
+                    "76o": false,
+                    "65s": false,
+                    "64s": false,
+                    "63s": false,
+                    "62s": false,
+                    "A5o": false,
+                    "K5o": false,
+                    "Q5o": false,
+                    "J5o": false,
+                    "T5o": false,
+                    "95o": false,
+                    "85o": false,
+                    "75o": false,
+                    "65o": false,
+                    "54s": false,
+                    "53s": false,
+                    "52s": false,
+                    "A4o": false,
+                    "K4o": false,
+                    "Q4o": false,
+                    "J4o": false,
+                    "T4o": false,
+                    "94o": false,
+                    "84o": false,
+                    "74o": false,
+                    "64o": false,
+                    "54o": false,
+                    "43s": false,
+                    "42s": false,
+                    "A3o": false,
+                    "K3o": false,
+                    "Q3o": false,
+                    "J3o": false,
+                    "T3o": false,
+                    "93o": false,
+                    "83o": false,
+                    "73o": false,
+                    "63o": false,
+                    "53o": false,
+                    "43o": false,
+                    "32s": false,
+                    "A2o": false,
+                    "K2o": false,
+                    "Q2o": false,
+                    "J2o": false,
+                    "T2o": false,
+                    "92o": true,
+                    "82o": true,
+                    "72o": true,
+                    "62o": true,
+                    "52o": false,
+                    "42o": false,
+                    "32o": false
+                }
+            })
+        });
     }
 }
 
 function apiphp(req, res, next) {
     const api = req.query.api || req.body.api
     req.api = api
-    
+
     if (!api || !(api in apis))
         return next(new Error(`Invalid api: ${api}`))
 
@@ -184,33 +1049,33 @@ function apiphp(req, res, next) {
 }
 
 module.exports = express.Router()
-.use([ // middlewares used in this api
-    cors({
-        origin: '*',
-        methods: ['GET', 'POST', 'DELETE'],
-        credentials: true,
-        allowedHeaders: ['Accept', 'X-Access-Token', 'X-Application-Name', 'X-Request-Sent-Time']
-    }),
+    .use([ // middlewares used in this api
+        cors({
+            origin: '*',
+            methods: ['GET', 'POST', 'DELETE'],
+            credentials: true,
+            allowedHeaders: ['Accept', 'X-Access-Token', 'X-Application-Name', 'X-Request-Sent-Time']
+        }),
 
-    express.json(),
-    express.urlencoded({ extended: true }),
+        express.json(),
+        express.urlencoded({ extended: true }),
 
-    // method overrides for DELETE method
-    methodOverride('X-HTTP-Method'),
-    methodOverride('X-HTTP-Method-Override'),
-    methodOverride('X-Method-Override'),
-    methodOverride(function (req, res) { // method override for urlencoded POST body with _method variable
-        if (req.body && typeof req.body === 'object' && '_method' in req.body) {
-          // look in urlencoded POST bodies and delete it
-          var method = req.body._method
-          delete req.body._method
-          return method
-        }
+        // method overrides for DELETE method
+        methodOverride('X-HTTP-Method'),
+        methodOverride('X-HTTP-Method-Override'),
+        methodOverride('X-Method-Override'),
+        methodOverride(function(req, res) { // method override for urlencoded POST body with _method variable
+            if (req.body && typeof req.body === 'object' && '_method' in req.body) {
+                // look in urlencoded POST bodies and delete it
+                var method = req.body._method
+                delete req.body._method
+                return method
+            }
+        })
+    ])
+    .post('/api.php', apiphp)
+    .get('/api.php', apiphp)
+    .use((err, req, res, next) => {
+        console.error(err.stack)
+        res.json({ status: false, error: err.message })
     })
-])
-.post('/api.php', apiphp)
-.get('/api.php', apiphp)
-.use((err, req, res, next) => {
-    console.error(err.stack)
-    res.json({ status: false, error: err.message })
-})

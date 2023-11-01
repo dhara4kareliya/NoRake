@@ -5,7 +5,7 @@ import { delay } from '../services/utils';
 import { BotManager } from './bot';
 import { Player, PlayerState, UserMode } from './player';
 import { SocketLobby } from './sockets';
-import { Table, TableSeat, TableSeatState } from "./table";
+import { Table, TableSeat, TableSeatState,InsurancePlayer } from "./table";
 import { TournamentGameController } from './tournament';
 import { round2 } from './math';
 
@@ -56,7 +56,8 @@ export class Room extends EventEmitter {
             .on('leave', (seat) => this.onTableLeave(seat))
             .on('remove_tournament', (seat) => this.onTournamentRemove())
             .on('end', () => this.onTableRoundResult())
-            .on('turn', (turn) => this.onTableTurn(turn));
+            .on('turn', (turn) => this.onTableTurn(turn))
+            .on('winInsurance', (InsurancePlayers) => this.onWinInsurance(InsurancePlayers));
 
 
         this.options.maxPlayers ??= this._table.options.numberOfSeats * 2;
@@ -228,7 +229,9 @@ export class Room extends EventEmitter {
 
         setTimeout(() => {
             if (!player.leavePending) {
-                this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                if(this.options.mode === 'cash') {
+                    this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                }
                 player.completeLeavePending();
             }
         }, 100);
@@ -245,11 +248,13 @@ export class Room extends EventEmitter {
 
     private async onTableRoundResult() {
         this.getPlayers()
-            .filter(player => player.leavePending === true)
-            .map(player => {
-                this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
-                player.completeLeavePending();
-            });
+                    .filter(player => player.leavePending === true)
+                    .map(player => { 
+                        if(this.options.mode === 'cash') {
+                            this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                        }
+                        player.completeLeavePending();
+                    });
 
         const players = this.table.getSeats()
             .filter(seat => seat.state !== TableSeatState.Empty)
@@ -272,8 +277,8 @@ export class Room extends EventEmitter {
         this.table.roundLog.StayPlayers = this.table.getStayPlayers();
 
         this._isWaitingEndroundRes = true;
-        const { status, tables } = await this.game.endRound(this.id, this.table.round, this.table.roundRake, players, this.table.roundLog, this.options.tournament_id);
-
+        const {status, tables, isDeleteTable} = await this.game.endRound(this.id, this.table.round, this.table.roundRake, players, this.table.roundLog, this.options.tournament_id);
+        
         if (status === 3) {
             setTimeout(() => {
                 // process.exit();
@@ -341,23 +346,28 @@ export class Room extends EventEmitter {
 
         this.emit('end_round_finished');
         this._isWaitingEndroundRes = false;
-        if (this.options.mode === "cash") {
-            const InsurancePlayers = this.table.getInsurancePlayers;
-
-            for (const player of InsurancePlayers) {
-                if (player.is_win == true) {
-                    const { status } = await this.game.winInsurance(this.id, player.user_id, String(player.insuranceWinAmount));
-
-                    if (status == true && player.index !== undefined) {
-                        const seat = this.table.getSeatAt(player.index);
-                        console.log(`seat.money(${seat.money}) + player.insuranceWinAmount(${player.insuranceWinAmount}) = ${round2(seat.money! + player.insuranceWinAmount)}`)
-                        seat.money = round2(seat.money! + player.insuranceWinAmount);
-                    }
-                }
-            }
+        
+        if (isDeleteTable) {
+            this.logger.debug('Got command to delete table from End Round api');
+            process.exit();
         }
         this.table.scheduleNewRound();
         // console.log(JSON.stringify(this.table.roundLog));
+    }
+
+    private async onWinInsurance(InsurancePlayers:InsurancePlayer[]){
+        if (this.options.mode !== "cash") 
+            return true;
+        for (const player of InsurancePlayers) {
+            if (player.is_win == true) {
+                const { status } = await this.game.winInsurance(this.id, player.user_id, String(player.insuranceWinAmount),this.table.round);
+                if (status == true && player.index !== undefined) {
+                    const seat = this.table.getSeatAt(player.index);
+                    console.log(`seat.money(${seat.money}) + player.insuranceWinAmount(${player.insuranceWinAmount}) = ${round2(seat.money! + player.insuranceWinAmount)}`)
+                    seat.money = round2(seat.money! + player.insuranceWinAmount);
+                }
+            }
+        }
     }
 
     public getPlayers() {

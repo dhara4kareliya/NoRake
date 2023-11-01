@@ -46,7 +46,7 @@ export class GameService {
     private table!: Table;
 
     constructor({ baseURL, tsURL }: GameServiceOptions, private readonly logger: winston.Logger) {
-        this.client = axios.create({ baseURL, timeout: 10000 });
+        this.client = axios.create({ baseURL, timeout: 5000 });
         this.tsURL = tsURL!;
     }
 
@@ -306,7 +306,7 @@ export class GameService {
 
     public async deleteTournamentTables(tournamentId: string) {
         try {
-            const url = `${process.env.MS_SERVER}/api/tournament?id=${tournamentId}`;
+            const url = `${process.env.MS_SERVER}/api/tables/tournament/${tournamentId}`;
             this.logger.debug(`Table Manager Service: Delete tournament tables: ${url}`);
 
             const res = await axios.delete(url, { httpsAgent });
@@ -446,12 +446,17 @@ export class GameService {
                 return {
                     status: res.data.status, 
                     tables: res.data.tables,
+                    isDeleteTable: Boolean(res.data.delete_table)
                 };
             }
             catch (err: any) {
                 this.logger.debug(`GameService: EndRound: Error: `, err);
                 if (err.code === 'ECONNABORTED') {
-                    this.table.emit('serverdisconn')
+                    this.table.emit('serverdisconn');
+
+                    if (!!tournament_id)
+                        this.deleteTournamentTables(tournament_id);
+                    
                     continue;
                 }
                 return {
@@ -593,10 +598,49 @@ export class GameService {
 
                 this.logger.debug(`GameService: Submit Side Bet status: Success.`);
                 
-                return {status: true};
+                return {status: true, betId: res.data.bet_id, freeBalance: res.data.updated_free_balance};
             }
             catch (err: any) {
                 this.logger.debug(`GameService: Submit Side Bet status: Error: `, err);
+                if (err.code === 'ECONNABORTED') {
+                    this.table.emit('serverdisconn')
+                    continue;
+                }
+                return {status: false};
+            }
+        }
+    }
+
+    public async submitSidebetResult(table: string, token: string, betId: string, awardAmount: string, round_id: number, commonCards: string, privateCards: string) {
+        while(true) {
+            try {
+                const url = `/api.php`;
+
+                const params = new URLSearchParams();
+
+                params.append('api', "win_bet");
+                params.append('table_token', table);
+                params.append('user_token', token);
+                params.append('bet_id', betId);
+                params.append('round_id', round_id.toString());
+                params.append('amount', awardAmount.toString());
+                params.append('private_cards', privateCards);
+                params.append('common_cards', commonCards);
+                
+                const res = await this.client.post(url, params);
+                console.log(params);
+                this.logger.debug(`GameService: Submit Side Bet Result: ${url}`);
+
+                if (!Boolean(res.data.status ?? false)) {
+                    return {status: false};
+                }
+
+                this.logger.debug(`GameService: Submit Side Bet Result: Success.`);
+                
+                return {status: true, freeBalance: res.data.updated_free_balance};
+            }
+            catch (err: any) {
+                this.logger.debug(`GameService: Submit Side Bet Result: Error: `, err);
                 if (err.code === 'ECONNABORTED') {
                     this.table.emit('serverdisconn')
                     continue;
@@ -621,6 +665,7 @@ export class GameService {
                 
                 const res = await this.client.post(url, params);
                 this.logger.debug(`GameService: Tip to Dealer status: ${url}`);
+                this.logger.debug(`GameService: Tip to Dealer amount: ${params}`);
 
                 if (!Boolean(res.data.status ?? false)) {
                 this.logger.debug(`GameService: Tip to Dealer status: failed.`);
@@ -642,7 +687,7 @@ export class GameService {
         }
     }
 
-    public async submitInsurance(table: string, token: string,insuranceAmount:string,insuranceWinAmount:string) {
+    public async submitInsurance(table: string, token: string,insuranceAmount:string,insuranceWinAmount:string,round_id:number) {
         while(true) {
             try {
                 const url = `/api.php`;
@@ -653,9 +698,10 @@ export class GameService {
                 params.append('user_token', token);
                 params.append('amount', insuranceAmount);
                 params.append('winAmount', insuranceWinAmount);
+                params.append('round_id', round_id.toString());
 
                 const res = await this.client.post(url, params);
-                this.logger.debug(`GameService: Submit Insurance status: ${url}, {${table},${token},${insuranceAmount},${insuranceWinAmount}}`);
+                this.logger.debug(`GameService: Submit Insurance status: ${url}, {${table},${token},${insuranceAmount},${insuranceWinAmount},${round_id.toString()}}`);
 
                 if (!Boolean(res.data.status ?? false)) {
                     return {status: false};
@@ -676,7 +722,7 @@ export class GameService {
         }
     }
 
-    public async winInsurance(table: string, token: string,amount:string){
+    public async winInsurance(table: string, token: string,amount:string,round_id:number){
         while(true) {
             try {
                 const url = `/api.php`;
@@ -686,9 +732,10 @@ export class GameService {
                 params.append('table_token', table);
                 params.append('user_token', token);
                 params.append('amount', amount);
+                params.append('round_id', round_id.toString());
 
                 const res = await this.client.post(url, params);
-                this.logger.debug(`GameService: Win Insurance status: ${url}, {${table},${token},${amount}}`);
+                this.logger.debug(`GameService: Win Insurance status: ${url}, {${table},${token},${amount},${round_id.toString()}}`);
 
                 if (!Boolean(res.data.status ?? false)) {
                     return {status: false};

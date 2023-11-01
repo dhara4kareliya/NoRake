@@ -110,8 +110,6 @@ export class TournamentTable extends Table {
     }
 
     public getSettings() {
-        let now = moment().valueOf();
-        console.log(`now ${new Date(now)}`);
         return {
             ...super.getSettings(),
             mode: 'tournament',

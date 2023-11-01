@@ -48,12 +48,12 @@ module.exports = () => {
         // const tables = threadTokens
         //             .map(token => find(token))
         //             .map(thread => thread.table)
-
+        // ${process.env.GAME_SERVER}/game/play?t=${token}
         const singleClientUrls = threadTokens
             .map(token => {
                 const thread = find(token)
                 return {
-                    url: `${process.env.GAME_SERVER}/game/play?t=${token}`,
+                    url: `http://localhost/NRpoker-game/?t=${token}`,
                     table_token: thread.table.token
                 }
             })

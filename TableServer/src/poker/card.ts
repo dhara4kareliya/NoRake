@@ -88,7 +88,7 @@ export function winners(results: HandResult[]): HandResult[] {
     return winners.map(hand => results.find(result => result.hand === hand)!);
 }
 
-function combinations(array : Card[]) {
+export function combinations(array : Card[]) {
 	const results : [Card[]] = [[]];
 	for (const value of array) {
 		const copy = [...results];

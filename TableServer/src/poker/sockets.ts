@@ -3,12 +3,13 @@ import { PlayerInfo } from '../services/game';
 import { Room } from './room';
 import { Player, PlayerState, AutoTopUpCase, TourneyInfo, UserMode, SideBetState } from './player';
 import { RoundState, Action } from './round';
-import { TableSeat, TableSeatState } from './table';
+import { SideBetOptions, TableSeat, TableSeatState } from './table';
 import winston from 'winston';
 import { HandRank } from './card';
 import { decrypt, delay, encrypt, generateRandomString } from '../services/utils';
 import { update } from 'lodash';
-import moment, { relativeTimeThreshold } from 'moment';
+import moment , { relativeTimeThreshold } from 'moment';
+import { evaluateSideBet } from '../sidebet';
 export class SocketLobby {
     private contexts: Map<string, SocketRoomContext> = new Map();
 
@@ -100,7 +101,7 @@ class SocketRoomContext {
 
         if (this.table.isClosed === true) {
             socket.emit('REQ_MESSAGE', { status: false, msg: "Table is closed" });
-            return;
+            //return;
         }
 
         this.log(`Player accepted. token: ${player.id}, player: ${player.name}.`);
@@ -272,7 +273,8 @@ class SocketPlayer extends Player {
             .on('waitlist', this.onCashWaitList)
             .on('log', this.onLog)
             .on('chat', this.onTableChat)
-            .on('sidebet', this.onSideBetOptions);
+            .on('sidebet', this.onSideBetOptions)
+            .on('sidebetcheck', this._onTableSideBetEvaluate);
     }
 
     private onInsurance = (data: { status: boolean, seat: TableSeat, data: any }) => {
@@ -390,7 +392,7 @@ class SocketPlayer extends Player {
             .on('REQ_PLAYER_SITOUT', (ack) => this.onRequestSitOut(ack))
             .on('REQ_PLAYER_SITIN', (ack) => this.onRequestSitIn(ack))
             .on('REQ_PLAYER_JOINWAITLIST', (ack) => this.onRequestJoinWaitlist(ack))
-            .on('REQ_PLAYER_SIDEBET', (ack) => this.onRequestSidebet(ack))
+            .on('REQ_PLAYER_SIDEBET', (data, ack) => this.onRequestSidebet(data, ack))
             .on('REQ_PLAYER_ACCEPT_INSURANCE', (data, ack) => this.onRequestInsurance(data, ack))
             .on('REQ_AUTO_FOLD', (data, ack) => this.onRequestAutoFold(data, ack))
             .on('REQ_TIP_DEALER', (data, ack) => this.onTipDealer(data, ack))
@@ -433,7 +435,77 @@ class SocketPlayer extends Player {
     }
 
     public updateFreeBalance(balance: number) {
+        this.send('REQ_TABLE_FREE_BALANCE', balance);
+        this.socketLog(`REQ_TABLE_FREE_BALANCE : ${balance}`);
+    }
 
+    private onSideBetOptions = (data: {street: number, options: SideBetOptions[]}) => {
+        if (this.seat?.state !== TableSeatState.Playing) {
+            return;
+        }
+
+        const tableCards = this.table?.getTableCards();
+        const handCards = this.table?.getSeats()
+                        .find(seat => seat.index === this.seat?.index)
+                        ?.context.cards;
+
+        const filteredOptions = data.options.map(option => {
+            const odds = option.odds.filter(odd => odd.selector(handCards, tableCards));
+            if (odds.length > 0) {
+                return {
+                    betName: option.betName,
+                    ratio: odds[0].value,
+                    note: option.note
+                };
+            }
+
+            return null;
+        }).filter(option => option !== null);
+
+        this.send('REQ_SIDEBET_OPTIONS', {street: data.street, streetText: SideBetState[data.street], options: filteredOptions});
+        this.socketLog(`REQ_SIDEBET_OPTIONS : ${JSON.stringify({street: SideBetState[data.street], options: filteredOptions}).toString()}`);
+    }
+
+    private _onTableSideBetEvaluate = async (state: SideBetState) => {
+        if (this._currentSideBet?.street !== state) {
+            this._currentSideBet = undefined;
+            return false;
+        }
+
+        const sideBets = this._currentSideBet.bets;
+        const tableCards = this.table?.getTableCards() || [];
+        const handCards = this.table?.getSeats()
+                        .find(seat => seat.index === this.seat?.index)
+                        ?.context.cards || [];
+        this.log(`Side Bet Hand Cards: ${handCards.join(',')} -- Table Cards: ${tableCards.join(',')}`);
+        let totalReward = 0;
+        for (let i = 0; i < sideBets.length; ++i) {
+            const isWin = evaluateSideBet(SideBetState[this._currentSideBet?.street], sideBets[i].betName, handCards, tableCards);
+
+            let winAmount = 0;
+            if (isWin) {
+                winAmount = (sideBets[i].ratio! - 1) * sideBets[i].amount;
+                totalReward += winAmount;
+                this.log(`Side Bet Result: Win (Bet Name:${sideBets[i].betName}, Awards: ${winAmount}, Ratio: ${sideBets[i].ratio})`);
+            }
+            else {
+                this.log(`Side Bet Result: Lose (Bet Name:${sideBets[i].betName})`);
+            }
+            
+            if (winAmount > 0) {
+                const sideBetResult = { betName: sideBets[i].betName, award: winAmount, timestamp: new Date()};
+                this.table?.setSideBetHistory(this.id, sideBetResult);
+
+                const data = await this.room?.game.submitSidebetResult(this.room!.id, this._id, sideBets[i].id, String(winAmount), this.table?.round!, tableCards.join(' '), handCards.join(' '));
+                if (data?.status) {
+                    this.updateFreeBalance(Number(data?.freeBalance));
+                }
+            }
+        }
+
+        console.log(this.table?.getSideBetHistory(this.id));
+
+        this.send('REQ_SIDEBET_HISTORY', {totalReward, historyLists: this.table?.getSideBetHistory(this.id)});
     }
 
     private onRequestShareHand = (data: any, ack: any) => {
@@ -453,8 +525,8 @@ class SocketPlayer extends Player {
     }
 
     private async onTipDealer(arg: { amount: number }, ack: any) {
-        console.log(`${Number(this.seat!.money)} < ${arg.amount} = ${Number(this.seat!.money) > arg.amount}`);
-        if(Number(this.seat!.money) < arg.amount)
+        console.log(`${Number(this.seat!.context.money)} < ${arg.amount} = ${Number(this.seat!.context.money) > arg.amount}`);
+        if(Number(this.seat!.context.money) < arg.amount)
         {
             this.send('REQ_MESSAGE', { status: false, msg: `Player(${this._name}) insufficient cash for tip` });
             return ack?.(JSON.stringify({ status: false }));
@@ -462,21 +534,15 @@ class SocketPlayer extends Player {
 
         const { status } = await this.room!.game.SubmitTipDealer(this.room!.id, this._id, arg.amount, this.table!.round);
         if (status == true) {
-            this.seat!.money = Number(this.seat!.money) - arg.amount;
+            this.seat!.context.money = Number(this.seat!.context.money) - arg.amount;
+            this.seat!.money = this.seat!.context.money;
             this.sendTableStatus();
+
             return ack?.(JSON.stringify({ status: status }));
         } else {
             this.send('REQ_MESSAGE', { status: status, msg: "Tip not send to dealer" });
         }
         return ack?.(JSON.stringify({status: status}));
-    }
-
-
-    private onSideBetOptions = (data: any) => {
-        // this.table!.getSideBetOptions(state)
-        this.sideBetState = data.street;
-        this.send('REQ_SIDEBET_OPTIONS', { street: SideBetState[data.street], options: data.options });
-        this.socketLog(`REQ_SIDEBET_OPTIONS : ${JSON.stringify({ street: SideBetState[data.street], options: data.options }).toString()}`);
     }
 
     private onTournamentLevelChanged = () => {
@@ -578,7 +644,8 @@ class SocketPlayer extends Player {
             .off('insurance', this.onInsurance)
             .off('closeTable', this.onCloseTable)
             .off('levelchange', this.onTournamentLevelChanged)
-            .off('sidebet', this.onSideBetOptions);
+            .off('sidebet', this.onSideBetOptions)
+            .off('sidebetcheck', this._onTableSideBetEvaluate);
     }
 
     private async onRequestInfo(ack?: (status: boolean) => void) {
@@ -592,11 +659,8 @@ class SocketPlayer extends Player {
     private async onRequestSitDown(arg: { seat: number; }, ack?: (status: boolean) => void) {
         const seatIndex = Number(arg.seat);
         if (this.table!.isClosed === true) {
-            const currentSocket = this._sockets.get(this._id);
-            currentSocket!.emit('REQ_MESSAGE', { status: false, msg: "Table is closed" });
+            this.send('REQ_MESSAGE', { status: false, msg: "Table is closed" });
             return false;
-            // this.send('REQ_MESSAGE', {status: false, msg: "Table is closed"});
-            // return false;
         }
 
         const { status, globalBalance } = await this.room!.game.getGlobalBalance(this._id);
@@ -620,6 +684,12 @@ class SocketPlayer extends Player {
         if (amount === 0) {
             this.table?.leave(this.seat!);
             return;
+        }
+
+        if (this.table!.isClosed === true) {
+            this.table?.leave(this.seat!);
+            this.send('REQ_MESSAGE', { status: false, msg: "Table is closed" });
+            return false;
         }
 
         this.socketLog(`Client to TS : REQ_PLAYER_BUYIN ${JSON.stringify({ amount: amount, autoTopUpLess: Boolean(arg.autoTopUpLess ?? false), autoTopUpZero: Boolean(arg.autoTopUpZero ?? false) }).toString()}`);
@@ -653,11 +723,8 @@ class SocketPlayer extends Player {
 
         this.socketLog(`Client to TS : REQ_PLAYER_TRANSFER ${JSON.stringify({ amount: amount }).toString()}`);
         if (this.table!.isClosed === true) {
-            const currentSocket = this._sockets.get(this._id);
-            currentSocket!.emit('REQ_MESSAGE', { status: false, msg: "Table is closed" });
+            this.send('REQ_MESSAGE', { status: false, msg: "Table is closed" });
             return ack?.(JSON.stringify({ status: false, message: "Table is closed" }));
-            // this.send('REQ_MESSAGE', {status: false, msg: "Table is closed"});
-            // return false;
         }
         const { status, transferedAmount, updatedGlobalBalance } = await this.room!.game.transferBalance(this.room!.id, this._id, amount);
 
@@ -677,27 +744,37 @@ class SocketPlayer extends Player {
         ack?.(JSON.stringify({ status: true, message: "", updatedTableWalletBalance: this.tableBalance, updatedGlobalBalance }));
     }
 
-    private async onRequestSidebet(arg: { street: number, sidebets: any; }, ack?: (jsonStr: string) => void) {
+    private async onRequestSidebet(arg: {street: number, sidebets: any;}, ack?: (jsonStr: string) => void) {
         let sidebets = arg.sidebets;
 
-        this.socketLog(`Client to TS : REQ_PLAYER_SIDEBET ${JSON.stringify({ bets: sidebets }).toString()}`);
+        this.socketLog(`Client to TS : REQ_PLAYER_SIDEBET ${JSON.stringify({ bets: sidebets}).toString()}`);
+
+        let sideBets = [];
+        const tableCards = this.table?.getTableCards();
+        const handCards = this.table?.getSeats()
+                        .find(seat => seat.index === this.seat?.index)
+                        ?.context.cards;
 
         for (let i = 0; i < sidebets.length; ++i) {
-            const sideBetOptions = this.table?.options.sideBetOptions![this.sideBetState];
+            const sideBetOptions = this.table?.options.sideBetOptions![arg.street - 1];
             const sideBetName = String(sidebets[i]).split('-')[0];
-            const ratio = sideBetOptions?.find(option => option.betName === sideBetName)?.ratio;
-            const tableCards = this.table?.getTableCards();
-            const handCards = this.table?.getSeats()
-                .find(seat => seat.index === this.seat?.index)
-                ?.context.cards?.join(' ');
-            await this.room!.game.submitSidebet(this.room!.id, this._id, sideBetName, String(sidebets[i]).split('-')[1], SideBetState[this.sideBetState], this.table?.round!, this.table?.options.bigBlind!, tableCards!, handCards!, this.room?.options.mode === 'cash', ratio);
+            const sideBetAmount = String(sidebets[i]).split('-')[1];
+            const ratio = sideBetOptions?.find(option => option.betName === sideBetName)?.odds.
+                            find(odd => odd.selector(handCards, tableCards))?.value!;
+            const {status, betId, freeBalance} = await this.room!.game.submitSidebet(this.room!.id, this._id, sideBetName, sideBetAmount, SideBetState[arg.street], this.table?.round!, this.table?.options.bigBlind!, (tableCards || []).join(' '), (handCards || []).join(' '), this.room?.options.mode === 'cash', ratio);
+            if (status) {
+                this.updateFreeBalance(Number(freeBalance));
+            }
+            sideBets.push({id: betId, betName: sideBetName, ratio: ratio, amount: Number(sideBetAmount), enoughBalance: status});
         }
 
-        ack?.(JSON.stringify({ status: true }));
+        this._currentSideBet = {street: arg.street, bets: sideBets};
+
+        ack?.(JSON.stringify({status: true, sideBet: this._currentSideBet}));
     }
 
     private async onRequestInsurance(arg: { insuranceAmount: string, insuranceWinAmount: string }, ack?: (jsonStr: string) => void) {
-        const { status } = await this.room!.game.submitInsurance(this.room!.id, this._id, arg.insuranceAmount, arg.insuranceWinAmount);
+        const { status } = await this.room!.game.submitInsurance(this.room!.id, this._id, arg.insuranceAmount, arg.insuranceWinAmount,this.table!.round);
         if (status == true) {
             const InsurancePlayers = this.table!.getInsurancePlayers;
             InsurancePlayers.push({

@@ -4,8 +4,8 @@ import { Card, HandRank, solve_nlh as solveNlhHand, solve_plo as solvePloHand, w
 import { round0, round2 } from './math';
 import { Timer } from 'timer-node';
 import winston from 'winston';
-import { Player, SideBetState } from './player';
-import { forEach, values } from 'lodash';
+import { Player, SideBetState} from './player';
+import { forEach } from 'lodash';
 import { delay } from '../services/utils';
 
 export interface TableOptions {
@@ -31,6 +31,10 @@ export interface SideBetOptions {
     betName: string;
     ratio: number;
     note: string;
+    odds: {
+        selector: (handCards?: Card[], tableCards?: Card[]) => boolean,
+        value: number
+    }[]
 }
 
 export interface TablePlayer {
@@ -57,7 +61,10 @@ export type TableEvent =
     'message' |
     'waitlist' |
     'log' |
-    'chat';
+    'chat' |
+    'insurance' |
+    'winInsurance' |
+    'sidebetcheck';
 
 export enum TableSeatState {
     Empty,
@@ -163,6 +170,12 @@ export interface TablePot {
     seats: TableSeat[];
 }
 
+export interface SideBetResult {
+    betName: string;
+    award: number;
+    timestamp: Date;
+}
+
 export interface InsurancePlayer {
     index?: number;
     user_id: string;
@@ -223,6 +236,8 @@ export abstract class Table extends EventEmitter {
 
     protected _roundEnabled: boolean = true;
 
+    protected _sideBetHistory: Map<string, SideBetResult[]> = new Map();
+
     protected _closed: boolean = false;
     public get isClosed() { return this._closed; }
 
@@ -267,6 +282,7 @@ export abstract class Table extends EventEmitter {
     public on(ev: 'start', listener: (round: number) => void): this;
     public on(ev: 'action', listener: (seat: TableSeat, lastAction: Action, bet?: number) => void): this;
     public on(ev: 'state', listener: (state: RoundState) => void): this;
+    public on(ev: 'sidebetcheck', listener: (state: SideBetState) => void): this;
     public on(ev: 'turn', listener: (turn: number) => void): this;
     public on(ev: 'result', listener: () => void): this;
     public on(ev: 'showcards', listener: (seat: TableSeat) => void): this;
@@ -274,6 +290,7 @@ export abstract class Table extends EventEmitter {
     public on(ev: 'foldanybet', listener: (seat: TableSeat) => void): this;
     public on(ev: 'muckcards', listener: (seat: TableSeat) => void): this;
     public on(ev: 'end', listener: () => void): this;
+    public on(ev: 'winInsurance', listener: (InsurancePlayers:InsurancePlayer[]) => void): this;
     public on(ev: 'levelchange', listener: () => void): this;
     public on(ev: 'serverdisconn', listener: () => void): this;
     public on(ev: 'message', listener: (seat: TableSeat, msg: string) => void): this;
@@ -305,6 +322,21 @@ export abstract class Table extends EventEmitter {
         };
     }
 
+    public getSideBetHistory(id: string) {
+        return this._sideBetHistory.get(id);
+    }
+
+    public setSideBetHistory(id: string, result: SideBetResult) {
+        const sidebetResults = this._sideBetHistory.get(id);
+        if (!!sidebetResults) {
+            sidebetResults?.push(result);
+            this._sideBetHistory.set(id, sidebetResults);
+        }
+        else {
+            this._sideBetHistory.set(id, [result]);
+        }
+    }
+
     public getSideBetOptions(state: SideBetState): SideBetOptions[] {
         return this.options.sideBetOptions![state];
     }
@@ -314,7 +346,7 @@ export abstract class Table extends EventEmitter {
     }
 
     public getTableCards() {
-        return this._context.cards?.join(' ');
+        return this._context.cards;
     }
 
     public getSeatAt(index: number) {
@@ -737,8 +769,9 @@ export abstract class Table extends EventEmitter {
         setTimeout(() => {
             this._context.dealPlayerCards();
             this.startCurrentState();
-            this.emit('sidebet', { street: 2, options: this.options.sideBetOptions![1] });
-            var dealtCards: Array<any> = [];
+            this.emit('sidebet', {street: 2, options: this.options.sideBetOptions![1]});
+            this.emit('sidebetcheck', SideBetState.PreCards);
+            var dealtCards : Array<any> = [];
             this.getPlayingSeats().forEach(seat => {
                 const cards = seat.context.cards?.join();
                 this.log(`Seat#${seat.index}(${seat.player!.name}): cards: [${cards}]`);
@@ -944,7 +977,7 @@ export abstract class Table extends EventEmitter {
         if (this._context.state < RoundState.Showdown && this._context.checkAllPlayersBet()) {
             this.returnLastSidepot();
         }
-        if (this._context.checkAllPlayersBet() && (seat.player as Player).room?.options.mode === "cash")
+        if (this._context.checkAllPlayersBet() && (this.getSettings() as any).mode === "cash")
             await this.insurance();
 
         if (!this.checkState()) {
@@ -1006,10 +1039,14 @@ export abstract class Table extends EventEmitter {
             return false;
 
         if (state >= RoundState.River) {
-            this.emit('sidebet', { street: 1, options: this.options.sideBetOptions![0] });
+            this.emit('sidebet', {street: SideBetState.PreCards, options: this.options.sideBetOptions![0]});
         }
         else {
-            this.emit('sidebet', { street: state + 1, options: this.options.sideBetOptions![state] });
+            this.emit('sidebet', {street: state + 1, options: this.options.sideBetOptions![state]});
+        }
+
+        if (state >= RoundState.Flop && state <= RoundState.River) {
+            this.emit('sidebetcheck', state);
         }
 
         setTimeout(() => this.emit('animation', { "type": "TableStatus", "data": { "state": RoundState[state] } }), this._seats.length * 55);
@@ -1029,12 +1066,14 @@ export abstract class Table extends EventEmitter {
     }
 
     protected async insurance() {
-        const allinPlayers = this._context.getPlayingSeats().filter(seat => seat.lastAction == "allin" && seat.fold !== true).map(seat => seat.index);
+        const getActivePlayers = this._context.getPlayingSeats().filter(seat => seat.fold !== true);
+        console.log(getActivePlayers);
+        const allinPlayers = getActivePlayers.filter(seat => seat.lastAction == "allin").map(seat => seat.index);
         console.log(`allinPlayers : ${allinPlayers.length}`);
-        if (allinPlayers.length == 2 && !this._insurance) {
+        if (getActivePlayers.length == 2 && allinPlayers.length == 2 && !this._insurance) {
             this.CheckWinner();
             var insuranceDelay = false;
-            var insuranceWinPrice:number = 0;
+            var mainPort:number = 0;
              let pots = this._context.calculatePots();
             console.log(pots);
             pots.forEach(pot => {
@@ -1044,21 +1083,23 @@ export abstract class Table extends EventEmitter {
                console.log(`pot.amount : ${pot.amount}`);
 
                 if(allinPlayrsInPot.length > 0)
-                    insuranceWinPrice += Number(pot.amount);
+                    mainPort += Number(pot.amount);
             });
-
-            this.getPlayingSeats().forEach(seat => {
-                var loosePercentage = Number((100 - seat.winPercentage!).toFixed(2));
-                console.log(`Seat#${seat.index}(${seat.player?.name}),winPercentage:${seat.winPercentage},loosePercentage:${loosePercentage}`);
-                if (seat.winPercentage !== undefined && loosePercentage <= 33) {
-
-                    var insurancePrice = (insuranceWinPrice * (loosePercentage + 5) / 100).toFixed(2);
-                    console.log(`Seat#${seat.index}(${seat.player?.name}) (${insuranceWinPrice} * (${loosePercentage} +5) / 100) = ${insurancePrice}`);
-                    this.emit('insurance', { status: true, seat: seat, data: { allInPrice:  insuranceWinPrice, insurancePrice: insurancePrice } });
-                    insuranceDelay = true;
-                }
-            });
-
+            console.log(`mainPort: ${mainPort},BB*20: ${(this.bigBlind!*20)} = ${mainPort >= (this.bigBlind!*20)}`);
+            if(mainPort >= (this.bigBlind!*20))
+            {
+                this.getPlayingSeats().forEach(seat => {
+                    var loosePercentage = Number((100 - seat.winPercentage!).toFixed(2));
+                    console.log(`Seat#${seat.index}(${seat.player?.name}),winPercentage:${seat.winPercentage},loosePercentage:${loosePercentage}`);
+                    if (seat.winPercentage !== undefined && loosePercentage <= 33) {
+    
+                        var insurancePrice = (mainPort * (loosePercentage + 5) / 100).toFixed(2);
+                        console.log(`Seat#${seat.index}(${seat.player?.name}) (${mainPort} * (${loosePercentage} +5) / 100) = ${insurancePrice}`);
+                        this.emit('insurance', { status: true, seat: seat, data: { allInPrice:  mainPort, insurancePrice: insurancePrice } });
+                        insuranceDelay = true;
+                    }
+                });
+            }
             if (insuranceDelay) {
                 this._insurance = true;
                 await delay(1000 * 5);
@@ -1654,6 +1695,7 @@ export abstract class Table extends EventEmitter {
 
         this._context.reset();
         this._result = undefined;
+        this.emit('winInsurance',this.getInsurancePlayers);
 
         this._seats.forEach(seat => {
 
@@ -1665,7 +1707,6 @@ export abstract class Table extends EventEmitter {
             //     seat.play = undefined;
             // }
         });
-
         this.onEnd();
         this.emit('end');
 

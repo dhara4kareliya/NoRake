@@ -29,14 +29,14 @@ class SocketLobby {
         
         ack(true)
 
-        // const clients = await this.getTSLists(userToken);
+         const clients = await this.getTSLists(userToken);
 
-        // for (let i = 0; i < clients.length; ++i) {
-        //     const client = clients[i];
-        //     socket.emit('REQ_MT_CLIENT_ADD', client);
-        //     await delay_500();
-        //     // clients.map(client => { socket.emit('REQ_MT_CLIENT_ADD', client) })
-        // }
+         for (let i = 0; i < clients.length; ++i) {
+             const client = clients[i];
+            socket.emit('REQ_MT_CLIENT_ADD', client);
+            // await delay_500();
+        // clients.map(client => { socket.emit('REQ_MT_CLIENT_ADD', client) })
+        }
     }
 
     getSocket(user_token) {
@@ -44,7 +44,7 @@ class SocketLobby {
     }
 
     async getTSLists(user_token) {
-        const res = await axios.get(`${process.env.GAME_SERVER}/api.php?api=get_mt_user&user_token=${user_token}`)
+        const res = await axios.get(`${process.env.GAME_SERVER}api.php?api=get_mt_user&user_token=${user_token}`)
         console.log(`${process.env.GAME_SERVER}/api.php?api=get_mt_user&user_token=${user_token}`);
         const urls = res.data.tables.map(table => table.url)
         console.log(res.data);

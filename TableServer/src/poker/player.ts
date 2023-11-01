@@ -37,6 +37,11 @@ export enum SideBetState {
     River
 }
 
+export interface SideBetStatus {
+    street: SideBetState,
+    bets: {id: string, betName: string, ratio: number, amount: number, enoughBalance: boolean}[]
+}
+
 export abstract class Player extends EventEmitter implements TablePlayer {
     protected _id!: string;
     public get id() { return this._id; }
@@ -92,9 +97,9 @@ export abstract class Player extends EventEmitter implements TablePlayer {
     private _leavePending?: boolean;
     public get leavePending() { return this._leavePending; }
 
-    protected _sideBetState: SideBetState = SideBetState.None;
-    public get sideBetState() { return this._sideBetState }
-    public set sideBetState(state: SideBetState) { this._sideBetState = state; }
+    protected _currentSideBet?: SideBetStatus;
+    public get currentSideBet() { return this._currentSideBet; }
+    public set currentSideBet(info: SideBetStatus | undefined) { this._currentSideBet = info; }
 
     protected constructor(protected readonly logger: winston.Logger) {
         super();
@@ -200,6 +205,7 @@ export abstract class Player extends EventEmitter implements TablePlayer {
 
     private _onTableSeat = (seat: TableSeat) => {
         if (seat === this._seat) {
+        
             this.updateState();
         }
     };
@@ -222,7 +228,6 @@ export abstract class Player extends EventEmitter implements TablePlayer {
                 this._state = PlayerState.Observing;
                 break;
         }
-
         this.onState();
 
         this.emit('state', this._state);
