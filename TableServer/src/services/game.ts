@@ -665,7 +665,6 @@ export class GameService {
                 
                 const res = await this.client.post(url, params);
                 this.logger.debug(`GameService: Tip to Dealer status: ${url}`);
-                this.logger.debug(`GameService: Tip to Dealer amount: ${params}`);
 
                 if (!Boolean(res.data.status ?? false)) {
                 this.logger.debug(`GameService: Tip to Dealer status: failed.`);

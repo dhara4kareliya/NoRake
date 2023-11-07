@@ -62,7 +62,6 @@ export type TableEvent =
     'waitlist' |
     'log' |
     'chat' |
-    'insurance' |
     'winInsurance' |
     'sidebetcheck';
 
@@ -451,6 +450,17 @@ export abstract class Table extends EventEmitter {
         if (this._context.isSeatPlaying(seat.index) && this._context.turn === seat.index) {
             setImmediate(() => this.action(seat, 'fold'));
         }
+    }
+    public TipDealer(seat: TableSeat | undefined, amount: number , ) {
+        if (!seat)
+            return;
+
+        this.actionLogInfo.push({
+            "seat": `Seat#${seat.index}`,
+            "user_id": (seat.player as Player)?.id,
+            "action": `tip: ${amount}`
+        });
+        this.log(`actionLog: Seat#${seat.index} user_id: ${(seat.player as Player)?.id} tip: ${amount}`)
     }
 
     protected onLeave(seat: TableSeat) { }
@@ -1106,6 +1116,20 @@ export abstract class Table extends EventEmitter {
                 this.emit('insurance', { status: false, data: [] });
             }
         }
+    }
+    public async getInsurance(seat: TableSeat | undefined, winAmount: number, InsurancePrice: number) {
+        if(!seat){
+            return;
+        }
+        
+        this.actionLogInfo.push({
+            "seat": `Seat#${seat.index}`,
+            "user_id": (seat.player as Player)?.id,
+            "winPercentage": seat?.winPercentage,
+            "insurancePrice":InsurancePrice,
+            "mainPort":winAmount
+        });
+        this.log(this.actionLogInfo)
     }
 
     protected CheckWinner() {

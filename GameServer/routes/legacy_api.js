@@ -174,6 +174,15 @@ const apis = {
     user_to_tips(req, res, next) {
         res.json({ status: true });
     },
+    table_report(req, res, next) {
+        res.json({ status: true });
+    },
+    win_bet(req, res, next) {
+        res.json({ status: true });
+    },
+    side_bet(req, res, next) {
+        res.json({ status: true });
+    },
     auto_fold(req, res, next) {
         res.json({
             "status": true,

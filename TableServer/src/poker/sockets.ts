@@ -526,18 +526,19 @@ class SocketPlayer extends Player {
 
     private async onTipDealer(arg: { amount: number }, ack: any) {
         console.log(`${Number(this.seat!.context.money)} < ${arg.amount} = ${Number(this.seat!.context.money) > arg.amount}`);
-        if(Number(this.seat!.context.money) < arg.amount)
+        if(Number(this.seat!.money) < arg.amount)
         {
             this.send('REQ_MESSAGE', { status: false, msg: `Player(${this._name}) insufficient cash for tip` });
             return ack?.(JSON.stringify({ status: false }));
         }
 
+
         const { status } = await this.room!.game.SubmitTipDealer(this.room!.id, this._id, arg.amount, this.table!.round);
         if (status == true) {
-            this.seat!.context.money = Number(this.seat!.context.money) - arg.amount;
-            this.seat!.money = this.seat!.context.money;
+            this.table!.TipDealer(this.seat, arg.amount);
+            this.seat!.context.money = Number(this.seat!.context.money)- arg.amount;
+            this.seat!.money = Number(this.seat!.money) - arg.amount;
             this.sendTableStatus();
-
             return ack?.(JSON.stringify({ status: status }));
         } else {
             this.send('REQ_MESSAGE', { status: status, msg: "Tip not send to dealer" });
@@ -776,15 +777,24 @@ class SocketPlayer extends Player {
     private async onRequestInsurance(arg: { insuranceAmount: string, insuranceWinAmount: string }, ack?: (jsonStr: string) => void) {
         const { status } = await this.room!.game.submitInsurance(this.room!.id, this._id, arg.insuranceAmount, arg.insuranceWinAmount,this.table!.round);
         if (status == true) {
-            const InsurancePlayers = this.table!.getInsurancePlayers;
-            InsurancePlayers.push({
+            const InsurancePlayer = this.table!.getInsurancePlayers;
+            InsurancePlayer.push({
                 index: this.seat?.index,
                 user_id: this._id,
                 insuranceAmount: Number(arg.insuranceAmount),
                 insuranceWinAmount: Number(arg.insuranceWinAmount),
                 is_win: false
             });
+            const InsuredPlayer = {
+                index: this.seat?.index,
+                user_id: this._id,
+                insuranceAmount: Number(arg.insuranceAmount),
+                insuranceWinAmount: Number(arg.insuranceWinAmount),
+                is_win: false
+            }
+            this.table!.getInsurance(this.seat , Number(arg.insuranceWinAmount), Number(arg.insuranceAmount));
         }
+
         ack?.(JSON.stringify({ status: status }));
     }
 
