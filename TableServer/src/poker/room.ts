@@ -27,31 +27,49 @@ type PlayerContext = {
     observerTimeout?: NodeJS.Timeout;
 }
 
-class Queue {
-    private tasks: (() => Promise<void>)[] = [];
-    private running = false;
+type CallbackFunction = (done: () => void) => void;
 
-    enqueue(task: () => Promise<void>) {
-        this.tasks.push(task);
-        if (!this.running) {
-            this.next();
+class Leave {
+    private counter: number = 0;
+    private queue: CallbackFunction[] = [];
+    private isLeaved: boolean = false;
+
+    constructor() {}
+
+    lock(callback: CallbackFunction) {
+        console.log('lock called');
+        
+        
+        this.queue.push(callback);
+
+        if (!this.isLeaved) {
+                this.proceed();
         }
     }
 
-    private async next() {
-        if (this.tasks.length === 0) {
-            this.running = false;
+    private proceed() {
+        
+        if (this.queue.length === 0) {
+            this.isLeaved = false;
             return;
         }
 
-        this.running = true;
-        const task = this.tasks.shift();
+        const callback = this.queue.shift();
 
-        // Simulate a 9-second delay
-        await new Promise(resolve => setTimeout(resolve, 9000));
+        if (callback) {
+            
+            this.isLeaved = true;
+            
+            this.unlock();
+            callback(() => {
+                this.unlock();
+            });
+        }
+    }
 
-        await task!();
-        this.next();
+    private unlock() {
+        this.isLeaved = false;
+        this.proceed();
     }
 }
 
@@ -254,20 +272,29 @@ export class Room extends EventEmitter {
 
     private onTableLeave(seat: TableSeat) {
         const player = seat.player as Player;
+        
+        const leavePlayers = new Leave(); 
 
-        setTimeout(() => {
-            if (!player.leavePending) {
-                if(this.options.mode === 'cash') {
-                    this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+            setTimeout( () => {
+                if (!player.leavePending) {
+                    if (this.options.mode === 'cash') {
+                            this.logger.debug(`table leave called`);
+                        leavePlayers.lock(async () => {
+                            
+                            await this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                        })
+                    }             
+                    player.completeLeavePending();
                 }
-                player.completeLeavePending();
-            }
-        }, 100);
+            }, 100);
 
-        if (player.exitReason !== undefined) {
-            if (player.exitReason.type == 'migrate')
-                this.game.moveToOtherTable(player.exitReason.server, player.exitReason.info)
-        }
+            setTimeout(() => {
+                if (player.exitReason !== undefined) {
+                    if (player.exitReason.type == 'migrate') {
+                        this.game.moveToOtherTable(player.exitReason.server, player.exitReason.info);
+                    }
+                }
+            });
     }
 
     private onTournamentRemove() {
@@ -275,15 +302,18 @@ export class Room extends EventEmitter {
     }
 
     private async onTableRoundResult() {
-        const queue = new Queue();
+        const leavePlayer = new Leave();
 
         this.getPlayers()
             .filter(player => player.leavePending === true)
-            .forEach(player => {
+            .forEach((player, index) => {
                 if (this.options.mode === 'cash') {
-                    queue.enqueue(async () => {
-                        await this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                    setTimeout(async ()=>{
+                        this.logger.debug(`endround leave called`);
+                    leavePlayer.lock(async () => {
+                        this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
                     });
+                }, 15000*index)
                 }
                 player.completeLeavePending();
             });
