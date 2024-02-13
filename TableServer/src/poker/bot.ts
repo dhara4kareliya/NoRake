@@ -95,13 +95,18 @@ export class BotPlayer extends Player {
         let buyInAmount = 0 as number;
         
         if (this.room?.options.mode === 'cash') {
-            buyInAmount = round0(randomInRange(this.room.options.minBuyIn!, this.room.options.maxBuyIn!));
+            buyInAmount = round0(randomInRange(this.room.options.minBuyIn!, this._cash));
         }
-
+        
         if (buyInAmount > this.tableBalance) {
             const {status, transferedAmount, updatedGlobalBalance} = await this.room!.game.transferBalance(this.room!.id, this._id, buyInAmount - this.tableBalance + 10)
             this.tableBalance = this.tableBalance + transferedAmount;
             this.globalBalance = updatedGlobalBalance;
+
+            if(status === false){
+                this.leave();
+                return;
+            }
         }
         
         const success = await this.buyIn(buyInAmount);
@@ -126,9 +131,10 @@ export class BotPlayer extends Player {
 
     public async deposit(amount: number) {
         const playerCash = await this.room!.game.deposit(this.room!.id, this._id, amount, this.table!.round);
+        this.tableBalance -= amount;
+        
         if (playerCash === undefined)
             return false;
-
         return true;
     }
 

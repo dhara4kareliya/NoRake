@@ -1964,6 +1964,10 @@ export abstract class Table extends EventEmitter {
 
     public startNextLevel(nextLevelOption: any) {}
 
+    public showAdminMessageForAllPlayers(message: String) {
+        this.emit('showadminmessage', message);
+    }
+
     public startTournament() {}
     public setUsdRate(usdRate: number) {
         this._usdRate = usdRate;

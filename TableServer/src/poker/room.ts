@@ -272,17 +272,12 @@ export class Room extends EventEmitter {
 
     private onTableLeave(seat: TableSeat) {
         const player = seat.player as Player;
-        
         const leavePlayers = new Leave(); 
-
-            setTimeout( () => {
-                if (!player.leavePending) {
-                    if (this.options.mode === 'cash') {
-                            this.logger.debug(`table leave called`);
-                        leavePlayers.lock(async () => {
-                            
-                            await this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
-                        })
+        
+        setTimeout( () => {
+            if (!player.leavePending) {
+                if (this.options.mode === 'cash') {
+                             this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
                     }             
                     player.completeLeavePending();
                 }
@@ -294,7 +289,7 @@ export class Room extends EventEmitter {
                         this.game.moveToOtherTable(player.exitReason.server, player.exitReason.info);
                     }
                 }
-            });
+            }, 100);
     }
 
     private onTournamentRemove() {
@@ -313,7 +308,7 @@ export class Room extends EventEmitter {
                     leavePlayer.lock(async () => {
                         this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
                     });
-                }, 15000*index)
+                },15000*index)
                 }
                 player.completeLeavePending();
             });

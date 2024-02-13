@@ -198,7 +198,6 @@ export class GameService {
     }
 
     public async leave(table: string, token: string, leftMoney: number, round_id: number) {
-        console.log('leave api called');
         
         let reconnectLimits = 3;
         while (reconnectLimits > 0) {
@@ -540,14 +539,17 @@ export class GameService {
                 const url = `api.php?api=user_wallet_to_table_wallet&table_token=${table}&user_token=${token}&amount=${amount}`;
                 this.logger.debug(`GameService: Balance transfer from User wallet to Table wallet: ${url}`);
                 const res = await this.client.get(url);
+
                 if (!Boolean(res.data.status ?? false)) {
                     this.logger.debug(`GameService: Balance transfer from User wallet to Table wallet: Failed.`);
                     return { status: false };
                 }
 
                 this.logger.debug(`GameService: Balance transfer from User wallet to Table wallet: Success.`);
+                
+                
 
-                return { status: true, transferedAmount: res.data.transfer_amount, updatedGlobalBalance: res.data.update_user_amount };;
+                return { status: true, transferedAmount: res.data.transfer_amount, updatedGlobalBalance: res.data.update_user_amount};
             }
             catch (err: any) {
                 this.logger.debug(`GameService: Balance transfer from User wallet to Table wallet: Error: `, err);

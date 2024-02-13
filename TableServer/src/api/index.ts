@@ -205,6 +205,16 @@ function tournamentNextLevel(req: Request, res: Response, next: NextFunction) {
 
     res.json({status: true});
 }
+function adminMessage(req: Request, res: Response, next: NextFunction) {
+    const room = req.app.locals.context.room as Room;
+    const message = req.body.message;
+    if(room.options.mode != "cash")
+        res.json({ status: false,message:"This Is Not A Cash Game"});
+
+    room.table.showAdminMessageForAllPlayers(message);
+
+    res.json({status: true});
+}
 
 function getTournamentTableStatus(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
@@ -281,6 +291,7 @@ export default express.Router()
 .post('/bots', addBot)
 .post('/tourney/info', tourneyInfo)
 .post('/tournament_next_level', tournamentNextLevel)
+.post('/admin_message', adminMessage)
 .get('/get_table_status', getTournamentTableStatus)
 .get('/start_tournament', startTournament)
 .get('/update_free_balance/:token/:balance', updateFreeBalance)

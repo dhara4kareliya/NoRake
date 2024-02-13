@@ -276,6 +276,7 @@ class SocketPlayer extends Player {
             .on('log', this.onLog)
             .on('chat', this.onTableChat)
             .on('tip', this.onTipToDealer)
+            .on('showadminmessage', this.onShowAdminMessage)
             .on('sidebet', this.onSideBetOptions)
             .on('sidebetcheck', this._onTableSideBetEvaluate);
     }
@@ -482,6 +483,7 @@ class SocketPlayer extends Player {
 
             return null;
         }).filter(option => option !== null);
+        
 
         this.send('REQ_SIDEBET_OPTIONS', {street: data.street, streetText: SideBetState[data.street], options: filteredOptions});
         this.socketLog(`REQ_SIDEBET_OPTIONS : ${JSON.stringify({street: SideBetState[data.street], options: filteredOptions}).toString()}`);
@@ -637,6 +639,9 @@ class SocketPlayer extends Player {
     private onTipToDealer = (data: {msg:string,seat:number}) => {
         this.send('REQ_TABLE_TIP', data);
     }
+    private onShowAdminMessage = (message:string) => {
+        this.send('REQ_MESSAGE', { status: false, msg: message, data:{ labelText:"Message"} });
+    }
 
     private onSocketDisconnect(socket: Socket) {
         this.log(`Player(${this._name}) is disconnected from socket(${socket.id}).`);
@@ -724,6 +729,7 @@ class SocketPlayer extends Player {
             .off('levelchange', this.onTournamentLevelChanged)
             .off('tip', this.onTipToDealer)
             .off('sidebet', this.onSideBetOptions)
+            .off('showadminmessage', this.onShowAdminMessage)
             .off('sidebetcheck', this._onTableSideBetEvaluate);
     }
 
