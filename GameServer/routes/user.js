@@ -16,15 +16,14 @@ function get_threads(app) {
 function login(req, res, next) {
     if (req.method === 'GET' || !req.body) {
         res.render('login.ejs')
-    }
-    else {
+    } else {
         get_users(req.app).authenticate(req.body.username, req.body.password)
-        .then(token => {
-            req.session.token = token
-            res.redirect(req.app.locals.redirectUrl || `${req.baseUrl}/info`)
-            delete req.app.locals.redirectUrl
-        })
-        .catch(next)
+            .then(token => {
+                req.session.token = token
+                res.redirect(req.app.locals.redirectUrl || `${req.baseUrl}/info`)
+                delete req.app.locals.redirectUrl
+            })
+            .catch(next)
     }
 }
 
@@ -32,10 +31,10 @@ function logout(req, res, next) {
     const token = req.session.token
 
     delete req.session.token
-    
+
     get_users(req.app).logout(token)
-    .then(() => res.redirect('/'))
-    .catch(next)
+        .then(() => res.redirect('/'))
+        .catch(next)
 }
 
 function info(req, res, next) {
@@ -48,18 +47,18 @@ function info(req, res, next) {
 
     const user_token = req.session.token
     get_users(req.app).getInfo(user_token)
-    .then(info => {
-        get_users(req.app).setUserToThread(thread.token, info); 
-        res.render('userinfo.ejs', { ...info, token: thread.token });
-    })
-    .catch(next)
+        .then(info => {
+            get_users(req.app).setUserToThread(thread.token, info);
+            res.render('userinfo.ejs', {...info, token: thread.token });
+        })
+        .catch(next)
 }
 
 const router = Router()
-.get('/login', login)
-.post('/login', login)
-.get('/logout', logout)
-.get('/info', [require_login(), info])
+    .get('/login', login)
+    .post('/login', login)
+    .get('/logout', logout)
+    .get('/info', [require_login(), info])
 
 module.exports = {
     root: '/user',

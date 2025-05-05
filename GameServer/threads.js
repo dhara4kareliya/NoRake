@@ -9,8 +9,11 @@ module.exports = () => {
         return threads.get(token);
     }
 
-    function findByTable(token) {
-        return tableToThreadMap.get(token)
+    function findByTable(token, mode) {
+
+        console.log(tableToThreadMap.get(token));
+
+        return tableToThreadMap.get(token);
     }
 
     function create(token) {
@@ -43,11 +46,11 @@ module.exports = () => {
 
     function getTablesByUserToken(token) {
         const threadTokens = [...threadToUserMap.entries()]
-                        .filter(({ 1: v }) => v === token)
-                        .map(([k]) => k)
-        // const tables = threadTokens
-        //             .map(token => find(token))
-        //             .map(thread => thread.table)
+            .filter(({ 1: v }) => v === token)
+            .map(([k]) => k)
+            // const tables = threadTokens
+            //             .map(token => find(token))
+            //             .map(thread => thread.table)
 
         const singleClientUrls = threadTokens
             .map(token => {
@@ -57,7 +60,7 @@ module.exports = () => {
                     table_token: thread.table.token
                 }
             })
-        
+
         return singleClientUrls
     }
 
@@ -65,14 +68,14 @@ module.exports = () => {
         const thread = find(t)
         if (!thread)
             return
-        
+
         return thread.table
     }
 
     function destroy(token) {
         if (token.startsWith('test_'))
             return
-            
+
         const thread = find(token)
         if (!thread)
             return

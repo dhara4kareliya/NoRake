@@ -1,13 +1,14 @@
 import { EventEmitter } from 'events';
 import { Action, Round, RoundState, Seat } from "./round";
 import { Card, HandRank, solve_nlh as solveNlhHand, solve_plo as solvePloHand, winners as solveWinners, HandResult } from "./card";
-import { round0, round2 } from './math';
+import { floor4, round0 } from './math';
 import { Timer } from 'timer-node';
 import winston from 'winston';
 import { Player, SideBetState} from './player';
 import { forEach } from 'lodash';
-import { delay } from '../services/utils';
+import { delay,generateHashAndServerString,generateJSONAndShuffleKey,verifyAllUserHashes } from '../services/utils';
 import _ from 'lodash';
+import { getErrorMessage } from '../messages';
 
 export interface TableOptions {
     id: number;
@@ -26,6 +27,11 @@ export interface TableOptions {
     rakeRound?: boolean;
     sitoutTimeout?: number;
     sideBetOptions?: SideBetOptions[][];
+    sideGameEnabled?: boolean;
+    sideBetEnabled?: boolean;
+    isRandomTable?:boolean;
+    lowActionEnabled?:boolean;
+    isEncryptedShuffling?:boolean;
 }
 
 export interface SideBetOptions {
@@ -41,7 +47,9 @@ export interface SideBetOptions {
 export interface TablePlayer {
     name: string;
     avatar: string;
+    country: string;
     joiningDate:string;
+    rating:string;
 }
 
 export type TableEvent =
@@ -53,6 +61,7 @@ export type TableEvent =
     'action' |
     'state' |
     'turn' |
+    'updateturn' |
     'result' |
     'showcards' |
     'showcardsbtn' |
@@ -61,11 +70,16 @@ export type TableEvent =
     'end' |
     'message' |
     'waitlist' |
+    'waitforbb' |
     'log' |
     'chat' |
     'tip' |
     'winInsurance' |
-    'sidebetcheck';
+    'sidebetcheck' |
+    'generatRandomString' |
+    'sendAllHashesToPlayers' | 
+    'verifyJsonString' |
+    'missedsidebet';
 
 export enum TableSeatState {
     Empty,
@@ -79,9 +93,10 @@ export type TableSeat = {
     index: number;
 
     state: TableSeatState;
-
+    showcards:boolean;
     player?: TablePlayer;
     money?: number;
+    pendingMoney?: number;
 
     context: Seat;
 
@@ -96,6 +111,10 @@ export type TableSeat = {
     sitoutTimeout?: NodeJS.Timeout;
     joiningTimeout?: NodeJS.Timeout;
     lossPercentage?: number;
+    
+    isWaitingSideBetRes?:boolean;
+    hash?:string;
+    randomString?:string;
 };
 
 export interface TableSettings {
@@ -105,9 +124,14 @@ export interface TableSettings {
     numberOfSeats: number;
     smallBlind: number;
     bigBlind?: number;
+    ante?:number,
     usdRate?: number;
     closeTable?: boolean;
+    handId?: number;
+    sideGameEnabled?: boolean;
+    sideBetEnabled?: boolean;
     precardSidebetOptions?: any;
+    isEncryptedShuffling?:boolean;
 }
 
 export interface TableSeatStatus {
@@ -175,6 +199,7 @@ export interface TablePot {
 export interface SideBetResult {
     betName: string;
     award: number;
+    streetName:String;
     timestamp: Date;
 }
 
@@ -184,6 +209,8 @@ export interface InsurancePlayer {
     insuranceAmount: number;
     insuranceWinAmount: number;
     is_win: boolean;
+    insuranceId?: string;
+    
 }
 
 export abstract class Table extends EventEmitter {
@@ -222,32 +249,65 @@ export abstract class Table extends EventEmitter {
     public get roundRake() { return this._roundRake; }
     protected _totalRake: number = 0;
     public get totalRake() { return this._totalRake; }
+    protected _roundTip: number = 0;
+    public get roundTip() { return this._roundTip; }
+    protected _totalTip: number = 0;
+    public get totalTip() { return this._totalTip; }
 
     private actionLogInfo: Array<any> = [];
+    public  getactionLogInfo(){return this.actionLogInfo; }
 
     protected _returnedSidePot: boolean = false;
-    public get returnedSidePot() { return this._returnedSidePot; }
 
     protected _insurance: boolean = false;
     protected _insurancePlayers: InsurancePlayer[] = [];
     public get getInsurancePlayers() { return this._insurancePlayers; }
 
     private _preflopFold: boolean = false;
+    public get preflopFold() { return this._preflopFold; }
 
     protected _selfOutPlayers: Array<any> = [];
 
     protected _roundEnabled: boolean = true;
-
+    public get roundEnabled() { return this._roundEnabled; }
+    public set roundEnabled(value :boolean){this._roundEnabled = value;}
+    
     protected _sideBetHistory: Map<string, SideBetResult[]> = new Map();
 
     protected _closed: boolean = false;
     public get isClosed() { return this._closed; }
+
+    protected _handId: number = 0;
+    public set handId(id:number){this._handId = id;}
 
     private _lastSidePots: any;
 
     protected _walletBalance: any = {};
     public get walletBalance() {return this._walletBalance; }
 
+    protected _lastAction: {actionType?:string,seat?:number,lastActionTime:Date} = {lastActionTime:new Date()};
+    public get lastAction () {return this._lastAction; }
+    public set lastAction (action:{actionType?:string,seat?:number,lastActionTime:Date}) {this._lastAction = action; }
+
+    protected _submitErrorReport:boolean = false;
+    public get submitErrorReport() {return this._submitErrorReport;}
+    public set submitErrorReport(error) {this._submitErrorReport = error;}
+
+    private _leavePlayers: Array<string> = [];
+    public get leavePlayers(){ return this._leavePlayers;}
+
+    private _isWaitingEndroundRes = false;
+    public get isWaitingEndroundRes() { return this._isWaitingEndroundRes; }
+    public set isWaitingEndroundRes(status) {this._isWaitingEndroundRes = status;}
+
+    private _allHashes?:any = {};
+    private _allRandomStrings?:any = {};
+    private _shuffleKey?:string = undefined;
+    private _jsonString?:string = undefined;
+    private _playerHashes?:any = {}
+    private _playerRandomStrings?:any = {};
+    private _wrongHashPlayers:Array<string> = [];
+    
     constructor(public readonly options: TableOptions, public readonly logger: winston.Logger) {
         super();
 
@@ -268,6 +328,8 @@ export abstract class Table extends EventEmitter {
         this._bigBlind = this.options.bigBlind;
         this._context = new Round({
             numberOfSeats: this.options.numberOfSeats,
+            gameType:this.options.gameType,
+            isEncryptedShuffling:this.options.isEncryptedShuffling,
         });
 
         this._seats = [];
@@ -276,6 +338,7 @@ export abstract class Table extends EventEmitter {
                 index: i,
                 state: TableSeatState.Empty,
                 context: this._context.getSeat(i),
+                showcards: false,
             });
         }
     }
@@ -288,7 +351,9 @@ export abstract class Table extends EventEmitter {
     public on(ev: 'action', listener: (seat: TableSeat, lastAction: Action, bet?: number) => void): this;
     public on(ev: 'state', listener: (state: RoundState) => void): this;
     public on(ev: 'sidebetcheck', listener: (state: SideBetState) => void): this;
+    public on(ev: 'missedsidebet', listener: (state: SideBetState) => void): this;
     public on(ev: 'turn', listener: (turn: number) => void): this;
+    public on(ev: 'updateturn', listener: () => void): this;
     public on(ev: 'result', listener: () => void): this;
     public on(ev: 'showcards', listener: (seat: TableSeat) => void): this;
     public on(ev: 'showcardsbtn', listener: (seat: TableSeat) => void): this;
@@ -298,11 +363,18 @@ export abstract class Table extends EventEmitter {
     public on(ev: 'winInsurance', listener: (InsurancePlayers:InsurancePlayer[]) => void): this;
     public on(ev: 'levelchange', listener: () => void): this;
     public on(ev: 'serverdisconn', listener: () => void): this;
-    public on(ev: 'reconnectfailed', listener: () => void): this;
+    public on(ev: 'reconnectfailed', listener: (msg: string) => void): this;
+    public on(ev: 'errorreport', listener: () => void): this;
     public on(ev: 'message', listener: (seat: TableSeat, msg: string) => void): this;
     public on(ev: 'waitlist', listener: (players: Player[]) => void): this;
+    public on(ev: 'waitforbb', listener: (seat: TableSeat, waitForBB: boolean) => void): this;
     public on(ev: 'chat', listener: (player: Player, msg: string) => void): this;
     public on(ev: 'tip', listener: (msg: string) => void): this;
+    public on(ev: 'startlevel', listener: () => void): this;
+    public on(ev: 'generatRandomString',listener: () => void): this;
+    public on(ev: 'sendAllHashesToPlayers',listener: (hashes:string) => void): this;
+    public on(ev: 'verifyJsonString',listener: (jsonString:string) => void): this;
+
     public on(ev: string, listener: (...args: any[]) => void): this;
     public on(ev: TableEvent | string, listener: (...args: any[]) => void): this {
         return super.on(ev, listener);
@@ -316,14 +388,22 @@ export abstract class Table extends EventEmitter {
         this.logger.debug(`Table#${this.id}: ${message}`, ...optionalParams);
     }
 
+    public failedReconnection(apiName:string) {
+        if(this._submitErrorReport === true) return;
+        this.emit('reconnectfailed', `Failed to reconnect to GS ${apiName} API after 5 attempts.`);
+        this.logger.error(`Failed to reconnect GS ${apiName} api 5 times`);
+        this._submitErrorReport = true;
+    }
+
     public getSettings(): TableSettings {
-        const precardsOptions = this.options.sideBetOptions![0].map(option => {
-            return {
-                betName: option.betName,
-                ratio: option.odds[0].value,
-                note: option.note
-            };
-        }).filter(option => option !== null);
+        const precardsOptions = (!this.options.sideBetOptions || !this.options.sideBetEnabled) ? [] :
+                                this.options.sideBetOptions![0].map(option => {
+                                    return {
+                                        betName: option.betName,
+                                        ratio: option.odds[0].value,
+                                        note: option.note
+                                    };
+                                }).filter(option => option !== null);
 
         return {
             id: this.options.id,
@@ -332,8 +412,13 @@ export abstract class Table extends EventEmitter {
             numberOfSeats: this.options.numberOfSeats,
             smallBlind: this._smallBlind!,
             bigBlind: this._bigBlind,
+            ante: this._ante,
             usdRate: this._usdRate,
             closeTable: this._closed,
+            handId:this._handId,
+            sideGameEnabled: this.options.sideGameEnabled,
+            sideBetEnabled: this.options.sideBetEnabled,
+            isEncryptedShuffling:this.options.isEncryptedShuffling,
             precardSidebetOptions: {
                 street: SideBetState.PreCards, 
                 streetText: SideBetState[SideBetState.PreCards], 
@@ -373,6 +458,10 @@ export abstract class Table extends EventEmitter {
         return this._seats[index];
     }
 
+    public getAllPlayers() {
+        return this._seats.filter(seat => seat.state !== TableSeatState.Empty);
+    }
+
     public getEmptySeats() {
         return this._seats.filter(seat => seat.state === TableSeatState.Empty);
     }
@@ -391,6 +480,10 @@ export abstract class Table extends EventEmitter {
 
     public findSeatForPlayer(player: TablePlayer) {
         return this._seats.find(seat => seat.state !== TableSeatState.Empty && seat.player === player);
+    }
+
+    public getSeatCards(seatIndex: number) {
+        return this._seats[seatIndex].context.cards;
     }
 
     public getStatus(): TableStatus {
@@ -412,41 +505,58 @@ export abstract class Table extends EventEmitter {
                 play: seat.play,
                 ante: seat.ante,
                 handRank: (seat.state === TableSeatState.Playing && !seat.context.fold) ? seat.hand?.hand.name : undefined,
-                cards: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut) ? seat.context.cards : undefined,
+                cards: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut || seat.context.isDeadCards === true) ? seat.context.cards : undefined,
                 fold: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut) ? seat.context.fold : undefined,
                 bet: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut) ? seat.context.bet : undefined,
                 lastAction: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut) ? seat.context.lastAction : undefined,
                 lastBet: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut) ? seat.context.lastBet : undefined,
-                sidebet: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.SitOut) ? !!(seat.player as Player).currentSideBet : undefined,
+                sidebet: (seat.state === TableSeatState.Playing || seat.state === TableSeatState.Joining) ? !!(seat.player as Player).currentSideBets : undefined,
+                isDeadCards:(seat.state !== TableSeatState.Playing && seat.context.isDeadCards === true) ? seat.context.isDeadCards: undefined,
             })),
         };
-    }
-
-    public setSidebetStatus(index: number, isSidebet: boolean) {
-        this._context.sidebet(index, isSidebet);
     }
 
     public setBlinds(smallBlind: number, bigBlind?: number) {
         this._smallBlind = smallBlind;
         this._bigBlind = bigBlind;
     }
+    
+    public setWaitingSideBetRes(seat:TableSeat,status:boolean){
+        seat.isWaitingSideBetRes = status;
+    }
+
+    public setWrongHashPlayers(player:string) 
+    {
+        if(!this._wrongHashPlayers.includes(player))
+            this._wrongHashPlayers.push(player);
+    }
+
+    public setPlayerHash(seat:TableSeat,hash:string){
+        this._allHashes[seat.index] = hash;
+        this._playerHashes[seat.index] = hash;       
+    }
+
+    public setPlayerRandomString(seat:TableSeat,randomstring:string){
+        this._allRandomStrings[seat.index] = randomstring;
+        this._playerRandomStrings[seat.index] = randomstring;
+    }
 
     public removeTournament() {
         this.emit('remove_tournament');
     }
 
-    public doBroadcastChat(player: Player, msg: string) {
-        this.emit('chat', {"playerName":player.name,"msg":msg});
+    public doBroadcastChat(msgInfo:{msg:string,playerName:string,time:string,seat:number}) {
+        this.emit('chat', msgInfo);
     }
     public doBroadcastTip(tipInfo:{msg:string,seat:number}) {
         this.emit('tip', tipInfo);
     }
 
-    public leave(seat: TableSeat) {
-        if (seat.state === TableSeatState.Empty)
+    public async leave(seat: TableSeat) {
+        if (seat === undefined || seat.state === TableSeatState.Empty)
             return;
-
-        if(seat.context.lastAction !== "fold" && seat.state === TableSeatState.Playing)
+             
+        if(seat.context.lastAction !== "fold" && seat.state === TableSeatState.Playing && this._submitErrorReport === false)
             return;
 
         const player = seat.player;
@@ -454,9 +564,19 @@ export abstract class Table extends EventEmitter {
 
         seat.state = TableSeatState.Empty;
 
-        this.onLeave(seat);
+        const playerInfo = (player as Player);
+        if(playerInfo.hasSidebet(SideBetState.PreCards))
+            await playerInfo.dealDeadCard();
 
-        this.emit('leave', seat, this._context.state > RoundState.None);
+        this.onLeave(seat);
+        
+        if(playerInfo.exitReason?.type !== "migrate" && this.options.isRandomTable === true && playerInfo.room?.options.mode == "cash" && this.submitErrorReport !== true && this.isClosed !== true)
+            this._leavePlayers.push(playerInfo.id);
+            
+
+        console.log(`leave : ${this._context.state > RoundState.None}`);
+        
+        this.emit('leave', seat, (this._context.state > RoundState.None &&  this._submitErrorReport === false));
 
         this.clearSitOutTimeout(seat);
 
@@ -489,6 +609,8 @@ export abstract class Table extends EventEmitter {
             "user_id": user_id,
             "action": `tip: ${amount}`
         });
+        this._totalTip = floor4(this._totalTip + amount);
+        this._roundTip = floor4(this._roundTip + amount);
     }
 
     protected onLeave(seat: TableSeat) { }
@@ -527,6 +649,18 @@ export abstract class Table extends EventEmitter {
             this.log(`Seat#${seat.index}(${seat.player?.name}): joining timeout clear.`);
             clearTimeout(seat.joiningTimeout);
             seat.sitoutTimeout = undefined;
+        }
+    }
+
+    private resetState() {
+        const seats = this.getSeats()
+            .filter(seat => seat.state !== TableSeatState.Playing && seat.money! > 0);
+        if (seats.length <= 1) {
+            if (seats.length == 1) {
+                seats[0].state = TableSeatState.Waiting;
+            }
+            
+            this._context.state = RoundState.None;
         }
     }
 
@@ -606,24 +740,17 @@ export abstract class Table extends EventEmitter {
         }, 1 * 1000);
     }
 
-    protected async removeAllPlayersAndDeleteTable(){
-        console.log(`totalRake : ${this.totalRake},walletBalance : ${this.walletBalance}`);
-        this.emit('closeTable', true);
+   
 
-        this.getSeats().forEach(seat => {
-            this.leave(seat);
-        });  
-        await delay(5000);
-        process.exit();
-
-    }
-
-    protected newRound() {
+    protected async newRound() {        
         if (this._context.state > RoundState.None) // already started
             return;
 
         if (this._closed === true) 
             return this.removeAllPlayersAndDeleteTable();
+
+        if(this._submitErrorReport === true || this._isWaitingEndroundRes) 
+            return;
 
         this._paused = this._pause;
         if (this._paused) {
@@ -647,6 +774,7 @@ export abstract class Table extends EventEmitter {
         const roundStartContext = this.startRound();
         if (!roundStartContext || roundStartContext.seats.length < 2 || !this._roundEnabled) {
             this.updateCurrentState();
+            this.setSideBetSitoutDeadCards(true);
             return;
         }
 
@@ -659,21 +787,20 @@ export abstract class Table extends EventEmitter {
         ++this._round;
         this.log(`-- NEW ROUND: ${this._round} --`);
         this.logger.info(`Round#${this._round}`);
-        this.emit('log', `Round: ${this._round}`);
-        // this._roundLog = {};
-        // this._roundLog["settings"] = {
-        //     "round_id" : this._round,
-        //     "table_id" : undefined,
-        //     "game_type" : this.options.gameType,
-        //     "mode" : undefined,
-        //     "max_players" : undefined,            
-        //     "min_buy_in" : undefined,    
-        //     "max_buy_in" : undefined,
-        //     "tournament_type" : undefined,
-        // };
+        this.emit('log', {log:`Round: ${this._round}`,isNewRound:true});
 
         this._result = undefined;
         this._roundRake = 0;
+        this._roundTip = 0;
+
+        //  encrypted Shuffling 
+        this._shuffleKey = undefined;
+        this._allHashes = {};
+        this._allRandomStrings = {};
+        this._jsonString = undefined;
+        this._playerHashes = {};
+        this._playerRandomStrings = {};
+        this._wrongHashPlayers = [];
 
         // add players
         this._context.reset();
@@ -681,30 +808,35 @@ export abstract class Table extends EventEmitter {
         this.onStart(this._round);
         this.emit('start', this._round);
 
+        this.emit('log', {log:`ante : ${this._ante}`})
         this.log(`Round start. sb: $${this._smallBlind}, bb: $${this._bigBlind}`);
         var initStates : any = {};
         var seatStates : Array<any> = [];
+        var anteSeats : Array<any> = [];
         roundStartContext.seats.forEach(seatStartContext => {
             const seat = this._seats[seatStartContext.index];
 
             if (seat.money)
-                seat.money = round2(seat.money)
+                seat.money = floor4(seat.money)
 
             this.log(`Seat#${seat.index}(${seat.player?.name}): Join in round. money: $${seat.money}`);
             this.logger.info(`Seat#${seat.index}: ${seat.player?.name} (${seat.money} chips)`);
-            var seat_state : any = {};
-            seat_state["seat"] = `Seat#${seat.index}`;
-            seat_state["user_id"] = (seat.player as Player)?.id;
-            seat_state["chips"] = seat.money;
 
-            seatStates.push(seat_state);
-            // this._roundLog += `Seat#${seat.index}: ${(seat.player as Player)?.id} (${seat.money} chips)` + "\n";
             if (seat.state !== TableSeatState.SitOut) {
                 seat.state = TableSeatState.Playing;
                 this.onSeatState(seat);
                 this.emit('seat', seat);
             }
 
+            var seat_state : any = {};
+            seat_state["seat"] = `Seat#${seat.index}`;
+            seat_state["user_id"] = (seat.player as Player)?.id;
+            seat_state["chips"] = seat.money;
+            seat_state["user_name"] = (seat.player as Player)?.name;
+            seat_state["status"] = seat.state == TableSeatState.Playing ? "Playing" : "SitOut";
+
+            seatStates.push(seat_state);
+            
             seat.play = (seat.play ?? 0) + 1;
             seat.hand = undefined;
             seat.timebank ??= this.options.timebankMax;
@@ -715,7 +847,7 @@ export abstract class Table extends EventEmitter {
 
             if (ante > 0) {
                 const money = seat.money!;
-                seat.money = Math.max(0, round2(money - ante));
+                seat.money = Math.max(0, floor4(money - ante));
                 ante = money - seat.money;
 
                 this._context.addAnteToPending(ante);
@@ -725,7 +857,11 @@ export abstract class Table extends EventEmitter {
 
                 this.log(`Seat#${seat.index}(${seat.player?.name}): Post ante. ante: $${ante}, money: $${seat.money}`);
                 this.logger.info(`Seat#${seat.index}: ${seat.player?.name}: ante ${ante}`);
-                // this._roundLog += `Seat#${seat.index}: ${(seat.player as Player)?.id}: ante ${ante}` + "\n";
+                anteSeats.push({
+                    "seat" : `Seat#${seat.index}`,
+                    "user_id" : (seat.player as Player)?.id,
+                    "ante" : ante
+                });
             }
             else {
                 seat.ante = 0;
@@ -733,6 +869,128 @@ export abstract class Table extends EventEmitter {
 
             this._context.add(seat.index, seat.money!);
         });
+        if(this._context.getPlayingSeats().filter(seat => seat?.ante! > 0).length > 0)
+        {
+            
+            this.emit('start', this._round);
+            await delay(1000);
+            this._context.removeAnteAction();
+        }
+        var playingSeats = this.getPlayingSeats();
+        
+        if(playingSeats.length > 3 && this.options.isEncryptedShuffling)
+        {
+            // Each user generates and hashes their random string, sends the hash to the server
+            var playerHashPromise = [];            
+            for (let index = 0; index < playingSeats.length; index++) {
+                let seat = playingSeats[index];
+                // wait for player hash 
+                playerHashPromise[index] = new Promise((resolve, reject) => {
+                    const setTimeoutId = setTimeout(() => {
+                        this._context.remove(seat.index); // if not get hash in 2 sec then not give card to player
+                        this.sitOut(seat);
+                        this.emit('message', seat, false,  getErrorMessage("timeout"));
+                        playingSeats.splice(index, 1);
+                        
+                        if(seat.index === roundStartContext.seatOfBigBlind)
+                            roundStartContext.seatOfBigBlind = undefined;
+                        else if(seat.index === roundStartContext.seatOfSmallBlind)
+                            roundStartContext.seatOfSmallBlind = undefined;
+
+                        resolve(true);
+                     }, 2000);
+                     const player = (seat.player as Player);
+                     
+                     player.on('get_player_hash', () =>{
+                        if(!!setTimeoutId)
+                            clearTimeout(setTimeoutId);
+                        
+                        resolve(true);
+                    });
+                    player.onGenerateHashAndRandomString();
+                });
+            }
+            await Promise.all(playerHashPromise);
+
+            // Server generates its random string, hashes it, and sends all hashes to users
+            const {randomString,hash} = generateHashAndServerString();
+            this._allHashes['server'] = hash;
+            this._allRandomStrings['server'] = randomString;
+            this.emit('sendAllHashesToPlayers',this._allHashes);
+
+            // Each user sends their random string to the server
+           
+            var playerRandomStringPromise = [];
+            for (let index = 0; index < playingSeats.length; index++) {
+                const seat = playingSeats[index];
+                // wait for player random string 
+                playerRandomStringPromise[index] =  new Promise((resolve, reject) => {
+                    const setTimeoutId = setTimeout(() => {
+                        this._context.remove(seat.index); // if not get random string in 2 sec then not give card to player
+                        this.sitOut(seat);  
+                        this.emit('message', seat, false,  getErrorMessage("timeout"));
+                        delete this._playerHashes[index];
+                        delete this._allHashes[index];
+
+                        if(seat.index === roundStartContext.seatOfBigBlind)
+                            roundStartContext.seatOfBigBlind = undefined;
+                        else if(seat.index === roundStartContext.seatOfSmallBlind)
+                            roundStartContext.seatOfSmallBlind = undefined;
+
+                        resolve(true);
+                    }, 2000);
+                     
+                    const player = (seat.player as Player);
+                    player.on('get_player_random_string', () => {
+                        if(!!setTimeoutId)
+                            clearTimeout(setTimeoutId);
+                        
+                        resolve(true);
+                    });
+                    player.onGetPlayerRandomString();
+                });
+            }
+            await Promise.all(playerRandomStringPromise);
+
+            if(this._context.getPlayingSeats().length < 2)
+            {
+                 return true;
+            }
+
+            // Server verifies all users' hashes
+            const { status, message,players } = verifyAllUserHashes(this._playerRandomStrings,this._playerHashes);
+            if(!status)
+            {
+                for (let index = 0; index < players.length; index++) {
+                    const player = players[index];
+                    if(player === "server")
+                        continue;
+                    
+                    const seat = this._seats[Number(player)];
+                    if(seat)
+                    {
+                        if(seat.index === roundStartContext.seatOfBigBlind)
+                            roundStartContext.seatOfBigBlind = undefined;
+                        else if(seat.index === roundStartContext.seatOfSmallBlind)
+                            roundStartContext.seatOfSmallBlind = undefined;
+
+                        delete this._allRandomStrings[player];
+                        delete this._allHashes[player];
+                        
+                        this._context.remove(seat.index); // if not get random string in 2 sec then not give card to player
+                        this.sitOut(seat);  
+                        this.emit('message', seat, false,  getErrorMessage("wronghashError"));
+                        this.emit('reportplayer',seat,'mismatch_hash');
+                        await this.leave(seat);
+                    }
+                }
+            }   
+            // Server generates JSON string and shuffle key     
+            const {jsonString,shuffleKey} = generateJSONAndShuffleKey(this._allRandomStrings,this._allHashes);
+            this.log(`shuffleKey :${shuffleKey}, jsonString : ${jsonString}`);
+            this._jsonString = jsonString;
+            this._shuffleKey = shuffleKey;            
+        }
 
         initStates["data"] = seatStates;
 
@@ -744,6 +1002,7 @@ export abstract class Table extends EventEmitter {
             seatOfBigBlind: roundStartContext.seatOfBigBlind,
             gameType: this.options.gameType,
             noBB: roundStartContext.noBB,
+            shuffleKey:this._shuffleKey,
         });
 
         this.updateCurrentState();
@@ -758,6 +1017,11 @@ export abstract class Table extends EventEmitter {
                 seat.money = seat.context.money;
                 this.log(`Seat#${seat.index}(${seat.player?.name}): Post sum. sum: $${sum}, money: $${seat.money}`);
                 this.logger.info(`Seat#${seat.index}: ${seat.player?.name}: call ${sum}`);
+                this.actionLogInfo.push({
+                    "seat" : `Seat#${seat.index}`,
+                    "user_id" : (seat.player as Player)?.id,
+                    "action" : `call : ${seat.context.lastBet}`
+                });
             }
         });
 
@@ -783,6 +1047,7 @@ export abstract class Table extends EventEmitter {
                 "user_id" : (seat.player as Player)?.id,
                 "sb" : this._smallBlind
             };
+            this.emit('log', {name:seat.player?.name,action:'SB',amount: seat.context.lastBet,Balance: seat.money,seat:seat.index,avatar:seat.player?.avatar})
         }
         else {
             this.logger.info(`SB: empty`);
@@ -798,11 +1063,14 @@ export abstract class Table extends EventEmitter {
                 "user_id" : (seat.player as Player)?.id,
                 "bb" : this._bigBlind
             };
+            this.emit('log', {name:seat.player?.name,action:'BB',amount: seat.context.lastBet,Balance: seat.money,seat:seat.index,avatar:seat.player?.avatar})
         }
         else {
             this.logger.info(`BB: empty`);
             initStates["BB"] = `empty`;
         }
+
+        initStates["Ante"] = anteSeats;
         if (this._context.seatOfSmallBlind !== undefined) {
             const seat = this._seats[this._context.seatOfSmallBlind];
             this.logger.info(`Seat#${seat.index}: ${seat.player?.name}: sb ${this._smallBlind}`);
@@ -818,8 +1086,8 @@ export abstract class Table extends EventEmitter {
         setTimeout(() => {
             this._context.dealPlayerCards();
             this.startCurrentState();
-            this.emit('sidebet', {street: 2, options: this.options.sideBetOptions![1]});
-            this.emit('sidebetcheck', SideBetState.PreCards);
+            this.setSideBetSitoutDeadCards();
+
             var dealtCards : Array<any> = [];
             this.getPlayingSeats().forEach(seat => {
                 const cards = seat.context.cards?.join();
@@ -831,21 +1099,23 @@ export abstract class Table extends EventEmitter {
                     "dealt": `[${cards}]`
                 });
                 this._seats[seat.index].timebank = Math.min(seat.timebank! + this.options.timebankBonus!, this.options.timebankMax!);
+                seat.timebank = Math.min(seat.timebank! + this.options.timebankBonus!, this.options.timebankMax!);
                 this.log(`Seat#${seat.index}(${seat.player?.name}): Player didn't use time bank. bonus: +${this.options.timebankBonus}s, now timebank: ${seat.timebank}s`);
-                this.emit('message', true, `Player didn't use time bank. bonus: +${this.options.timebankBonus}s, now timebank: ${seat.timebank}s`);
+                this.emit('message', true,  `Player did not use time bank. Bonus: +${this.options.timebankBonus}s, current time bank: ${seat.timebank}s.`);
             });
             this._roundLog["dealt_cards"] = dealtCards;
 
 
         }, 500)
 
+        this._lastAction = {actionType:"newRound",lastActionTime:new Date()};
         this.checkDAndSBOrBB();
     }
 
     private checkDAndSBOrBB() {
         if (this._context.seatOfBigBlind === undefined && !this._context.NoBB) {
             this.logger.error("BigBlind is not existed");
-            this.logger.error(this._roundLog);
+            this.logger.error(JSON.stringify(this._roundLog));
             return;
         }
 
@@ -855,7 +1125,7 @@ export abstract class Table extends EventEmitter {
             const seatOfBB = this.getNextPlayingSeatIndex(seatOfDealer!);
             if (this._context.seatOfBigBlind !== seatOfBB) {
                 this.logger.error("D, BB Order is wrong when SB empty");
-                this.logger.error(this._roundLog);
+                this.logger.error(JSON.stringify(this._roundLog));
             }
             else {
                 this.logger.info("D, BB Order is matching when SB empty");
@@ -869,8 +1139,8 @@ export abstract class Table extends EventEmitter {
                     this.logger.info("D, SB, BB Order is matching when SB not empty");
                 }
                 else {
-                    this.logger.error("D, SB, BB Order is wrong when SB not empty");
-                    this.logger.error(this._roundLog);
+                    this.logger.error(`D, SB, BB Order is wrong when SB not empty, ${seatOfSB},${seatOfBB}`);
+                    this.logger.error(JSON.stringify(this._roundLog));
                 }
         }
     }
@@ -912,14 +1182,14 @@ export abstract class Table extends EventEmitter {
         if (turn !== undefined) {
             const seat = this._seats[turn];
             let { actions, call, raise } = this._context.getActions();
-            const timeout = this.options.timeToReact! + seat.timebank! - this.turnTimerElapsed();
+            const timeout = parseFloat((this.options.timeToReact! + seat.timebank! - this.turnTimerElapsed()).toFixed(2));
             context = {
                 ...context,
                 call,
                 canRaise: actions.includes('raise'),
                 raise,
                 currentBet: seat.context.lastBet,
-                time: [timeout, this.options.timeToReact!, seat.timebank!],
+                time: [timeout, this.options.timeToReact!, parseFloat(seat.timebank!.toFixed(2))],
             };
         }
         return context;
@@ -941,7 +1211,7 @@ export abstract class Table extends EventEmitter {
         // if (!this._context.isSeatPlaying(seat.index) || seat.state === TableSeatState.Empty) {
         if (!this._context.isSeatPlaying(seat.index)) {
             this.log(`Seat#${seat.index}(${seat.player?.name}): Player is not playing. Discarding action. action: ${action}, bet: $${bet}`);
-            this.emit('message', seat, false, `Player is not playing. Discarding action. action: ${action}, bet: $${bet}`);
+            this.emit('message', seat, false,  `Player is not currently active. Action discarded. Action: ${action}, Bet: ${bet}.`);
             return false;
         }
 
@@ -960,12 +1230,16 @@ export abstract class Table extends EventEmitter {
                 "user_id" : (seat.player as Player)?.id,
                 "action" : "fold"
             });
+            if(this._context.state < RoundState.Showdown && this._context.checkOnePlayerRemaining() && this._context.state != 1){
+                seat.showcards = true;
+            }
 
         }
         else if (action === 'bet') {
             if (!this._context.bet(this._context.turn, bet)) {
-                this.log(`Seat#${seat.index}(${seat.player?.name}): Player did incorrect bet. money: $${seat.money}, table last bet: $${this._context.lastBet}, seat bet: $${seat.context.bet}, legal bet: $${this._context.lastBet! - seat.context.bet!}, bet: $${bet}. Discarding action.`);
-                this.emit('message', seat, false, `Player did incorrect bet. money: $${seat.money}, table last bet: $${this._context.lastBet}, seat bet: $${seat.context.bet}, legal bet: $${this._context.lastBet! - seat.context.bet!}, bet: $${bet}. Discarding action.`);
+                this.logger.error(`Seat#${seat.index}(${seat.player?.name}): Player did incorrect bet. money: $${seat.money}, table last bet: $${this._context.minBet}, seat bet: $${seat.context.bet}, legal bet: $${this._context.minBet! - seat.context.bet!}, bet: $${bet}. Discarding action.`);
+                this.log(`min value : ${this._context.minBet!}, bet: $${bet}, bb: $${this._bigBlind}`)
+                this.emit('cancel_bet', seat);
                 return false;
             }
             this.emit('animation', {"type":"betAction","data":{"action":action,"bet":bet,"index":seat.index,"state":seat.state}});
@@ -1014,6 +1288,7 @@ export abstract class Table extends EventEmitter {
         }
 
         seat.money = seat.context.money;
+        this._lastAction = {actionType:"bet",seat:seat.index,lastActionTime:new Date()};
 
         this.log(`Seat#${seat.index}(${seat.player?.name}): Action success. action: ${seat.context.lastAction}, bet: $${seat.context.lastBet}, total bet: $${seat.context.bet}, money: $${seat.context.money}`);
         this.emit('message', seat, true, `Action success. action: ${seat.context.lastAction}, bet: $${seat.context.lastBet}, total bet: $${seat.context.bet}, money: $${seat.context.money}`);
@@ -1021,15 +1296,19 @@ export abstract class Table extends EventEmitter {
 
         this.onAction(seat, seat.context.lastAction, bet);
         this.emit('action', seat, seat.context.lastAction, bet);
-        this.emit('log', `${seat.player?.name}:${seat.context.lastAction} ${bet === 0 ? '' : bet}`)
+        this.emit('log', {name:seat.player?.name,action:seat.context.lastAction,amount: bet === 0 ? '' : bet,Balance: seat.money,seat:seat.index,avatar:seat.player?.avatar});
+        
 
-        if (this._context.state < RoundState.Showdown && this._context.checkAllPlayersBet()) {
+        if (!this._returnedSidePot && this._context.state < RoundState.Showdown && (this._context.checkAllPlayersBet() || this._context.checkAllPlayersAllIn())) {
             this.returnLastSidepot();
         }
-        if (this._context.checkAllPlayersBet() && (this.getSettings() as any).mode === "cash")
+        if (this._context.checkAllPlayersBet()){
+            const street = (this._context.state < RoundState.Turn) ? this._context.state + 2 : SideBetState.PreCards;
+            this.emit('sidebet', {street: street, options: []});
             await this.insurance();
+        }
 
-        if (!this.checkState()) {
+        if (!await this.checkState()) {
             const setTurnTimeout = this._context.state === RoundState.Showdown ? false : true;
             if(setTurnTimeout)
             {
@@ -1037,9 +1316,9 @@ export abstract class Table extends EventEmitter {
             }else{
                 this.nextTurn();
             }
-        } else {
-            this._returnedSidePot = false;
         }
+
+     
 
         if (seat.state === TableSeatState.Empty) {
             this._context.remove(seat.index);
@@ -1078,23 +1357,74 @@ export abstract class Table extends EventEmitter {
         }
     }
 
-    protected checkState() {
+    private removeUnclaimedSidebet() {
+        this.getWaitingSeats().map(seat => {
+            const player = seat.player as Player;
+            player.sidebetUnclaimed = false;
+        });
+    }
+
+    protected async  checkState()   {
         if (this._context.checkPreflopOnePlayerRemaining()) {
             this._preflopFold = true;
         }
 
+        const oldState = this._context.state;
         const state = this._context.checkState();
         if (state === undefined)
             return false;
 
-        if (state >= RoundState.River) {
-            this.emit('sidebet', {street: SideBetState.PreCards, options: this.options.sideBetOptions![0]});
-        }
-        else {
-            this.emit('sidebet', {street: state + 1, options: this.options.sideBetOptions![state]});
+        var pendingSideBetRes = this.getAllPlayers().filter(seat => seat.isWaitingSideBetRes);
+        if(pendingSideBetRes.length > 0)
+        {
+            for (let index = 0; index < pendingSideBetRes.length; index++) {
+                const seat = pendingSideBetRes[index];
+                 await new Promise((resolve, reject) => {
+                    console.log("wait for bet");
+                    (seat.player as Player).on('side_bet_finished', resolve);
+                });
+            }
         }
 
-        if (state >= RoundState.Flop && state <= RoundState.River) {
+        if(oldState !== state)
+        {
+            this.lastAction = {actionType:"changeState",lastActionTime:new Date()};
+            if (oldState === RoundState.PreFlop) {
+                this._roundLog["pre_flop"]["data"] = this.actionLogInfo;
+                this.actionLogInfo = [];
+            }
+            else if (oldState === RoundState.Flop) {
+                this._roundLog["flop"]["data"] = this.actionLogInfo;
+                this.actionLogInfo = [];
+            }
+            else if (oldState === RoundState.Turn) {
+                this._roundLog["turn"]["data"] = this.actionLogInfo;
+                this.actionLogInfo = [];
+            }
+            else if (oldState === RoundState.River) {
+                this._roundLog["river"]["data"] = this.actionLogInfo;
+                this.actionLogInfo = [];
+            }
+        }
+
+        if (this.options.sideBetOptions != undefined && this.options.sideBetEnabled) {
+            const setTurnTimeout = state === RoundState.Showdown ? 0 : 3000;
+            setTimeout(()=>{
+                if(state === RoundState.Showdown)
+                {                    
+                    this.emit('sidebet', {street: SideBetState.PreCards, options: []});
+                }else if (state >= RoundState.River) {
+                    this.emit('sidebet', {street: SideBetState.PreCards, options: this.options.sideBetOptions![0]});
+                }
+                else {
+                    this.emit('sidebet', {street: state + 1, options: this.options.sideBetOptions![state]});
+                }
+            },setTurnTimeout);
+            
+        }
+
+        if (state >= RoundState.Flop && state <= RoundState.River && this.options.sideBetEnabled) {
+            this.removeUnclaimedSidebet();
             this.emit('sidebetcheck', state);
         }
 
@@ -1110,54 +1440,12 @@ export abstract class Table extends EventEmitter {
             });
         }
 
+        this.emit('updateturn', this._context.turn);
         setTimeout(() => this.startCurrentState(), 1200);
         return true;
     }
 
-    protected async insurance() {
-        const getActivePlayers = this._context.getPlayingSeats().filter(seat => seat.fold !== true);
-        const allinPlayers = getActivePlayers.filter(seat => seat.lastAction == "allin").map(seat => seat.index);
-        console.log(`allinPlayers : ${allinPlayers.length}`);
-        if (getActivePlayers.length == 2 && allinPlayers.length == 2 && !this._insurance) {
-            await this.CheckWinner();
-            var insuranceDelay = false;
-            var mainPort:number = 0;
-            let pots = this._context.calculatePots();
-            console.log(allinPlayers);
-            
-            pots.forEach(pot => {
-                const allinPlayrsInPot = pot.seats.filter(seat=>allinPlayers.includes(seat.index)).map(seat => seat.index);
-                console.log(`allin players : ${allinPlayers}`);
-                console.log(`allinPlayrsInPot : ${allinPlayrsInPot}`);
-                console.log(`pot.amount : ${pot.amount}`);
-
-                if(allinPlayrsInPot.length > 0)
-                    mainPort += Number(pot.amount);
-            });
-            console.log(`mainPort: ${mainPort},BB*20: ${(this.bigBlind!*20)} = ${mainPort >= (this.bigBlind!*20)}`);
-            if(mainPort >= (this.bigBlind!*20))
-            {
-                if(this._returnedSidePot) 
-                    this._returnedSidePot = false;
-
-                this.getPlayingSeats().forEach(seat => {
-                    console.log(`Seat#${seat.index}(${seat.player?.name}),lossPercentage:${seat.lossPercentage}`);                       
-                    if (seat.lossPercentage !== undefined && seat.lossPercentage < 0.33 && seat.lossPercentage > 0) {
-                        var insurancePrice = (mainPort * seat.lossPercentage * 1.05).toFixed(2);
-                        console.log(`Seat#${seat.index}(${seat.player?.name}) (${mainPort} * ${seat.lossPercentage} * 1.05) = ${insurancePrice}`);
-                        this.emit('insurance', { status: true, seat: seat, data: { allInPrice:  mainPort, insurancePrice: insurancePrice } });
-                        insuranceDelay = true;
-                    }
-                });
-            }
-            if (insuranceDelay) {
-                this._insurance = true;
-                await delay(1000 * 5);
-                this.emit('insurance', { status: false, data: [] });
-            }
-        }
-    }
-    public logInsurance(index:number,user_id:string,lossPercentage:number,insuranceAmount:number,insuranceWinAmount:number) {
+    public logInsurance(index:number,user_id:string,lossPercentage:number,insuranceAmount:number,insuranceWinAmount:number,insuranceId?:string) {
         const streetStrs = ['pre_flop','flop','turn','river'];
         const state:number = this._context.state as number;
         if(this._roundLog[streetStrs[state-1]] != undefined)
@@ -1170,7 +1458,8 @@ export abstract class Table extends EventEmitter {
                 "user_id": user_id,
                 "lossPercentage": lossPercentage,
                 "insurancePrice":insuranceAmount,
-                "mainPort":insuranceWinAmount
+                "mainPort":insuranceWinAmount,
+                "insuranceId":insuranceId,
             });
         }
     }
@@ -1190,6 +1479,9 @@ export abstract class Table extends EventEmitter {
         });
         const deckCards  = this._context.getNewDeck.filter(card => !removeCards.includes(card));
         if(RoundState.PreFlop === this._context.state){
+           if(this.options.gameType !== 'nlh') 
+            return false;
+        
             process.send!({type:"preFlopAllinPlayersCards","data":seats.map(seat => ({playerCard:seat.context.cards,index:seat.index}))});
             await delay(1000 * 0.5);            
             return true;
@@ -1253,12 +1545,11 @@ export abstract class Table extends EventEmitter {
             });
         });
 
-        console.log(`winners : ${winners},insurancePlayers:${JSON.stringify(this.getInsurancePlayers)}`);
         this._insurancePlayers.filter(player => !winners.includes(player.index!)).forEach(value => {
             value.is_win = true;
             value.insuranceWinAmount = value.insuranceWinAmount / winners.length;
         });
-
+        console.log(`winners : ${winners},insurancePlayers:${JSON.stringify(this.getInsurancePlayers)}`);
         /*const insurancePlayers = this._insurancePlayers.filter(player => player.is_win == true);
         if (insurancePlayers.length <= 0) {
 
@@ -1273,7 +1564,7 @@ export abstract class Table extends EventEmitter {
     protected startCurrentState() {
         this.updateCurrentState();
 
-        if (this._context.state < RoundState.Showdown && this._context.checkOnePlayerRemaining() && !this._context.checkPendingSidebet()) {
+        if (this._context.state < RoundState.Showdown && this._context.checkOnePlayerRemaining()) {
             setTimeout(() => this.checkState(), 1500);
             return false;
         }
@@ -1289,7 +1580,7 @@ export abstract class Table extends EventEmitter {
 
         const playingSeatsLength = this._context.getPlayingSeats()
             .filter(seat => !(seat.fold ?? false)).length;
-        this.emit('log', `${RoundState[this._context.state]}: ${playingSeatsLength} players`);
+        this.emit('log', {log:`${RoundState[this._context.state]}: [${cards}], ${playingSeatsLength} players`});
 
         const streetStrs = ['pre_flop', 'flop', 'turn', 'river'];
         streetStrs.forEach(str => {
@@ -1302,23 +1593,13 @@ export abstract class Table extends EventEmitter {
         });
 
         if (this._context.state === RoundState.Flop) {
-            this._roundLog["pre_flop"]["data"] = this.actionLogInfo;
             this._roundLog["flop"]["dealt"] = cards;
-            this.actionLogInfo = [];
         }
         else if (this._context.state === RoundState.Turn) {
-            this._roundLog["flop"]["data"] = this.actionLogInfo;
             this._roundLog["turn"]["dealt"] = cards;
-            this.actionLogInfo = [];
         }
         else if (this._context.state === RoundState.River) {
-            this._roundLog["turn"]["data"] = this.actionLogInfo;
             this._roundLog["river"]["dealt"] = cards;
-            this.actionLogInfo = [];
-        }
-        else if (this._context.state === RoundState.Showdown) {
-            this._roundLog["river"]["data"] = this.actionLogInfo;
-            this.actionLogInfo = [];
         }
 
         const setTurnTimeout = this._context.state === RoundState.Showdown ? false : true;
@@ -1334,8 +1615,7 @@ export abstract class Table extends EventEmitter {
         }
         else if (this._context.state < RoundState.Showdown && this._context.checkAllPlayersAllIn()) {
             this.log(`All players all-in. To showdown.`);
-            this.emit('animation', {"type":"AllIn"});
-            // this.returnLastSidepot();
+            this.emit('animation', {"type":"allPlayersAllIn"});
 
             setTimeout(() => this.checkState(), 1500);
         }
@@ -1354,22 +1634,24 @@ export abstract class Table extends EventEmitter {
             return;
 
         const players = this.getPlayingSeats();
-        const pots = this._context.calculatePots();
+        const { pots, shouldReturn } = this._context.calculatePots(this._returnedSidePot);
 
-        const {returnSeatIndex, returnBet} = this._context.getReturnBet(pots);
+        const {returnSeatIndex, returnBet} = this._context.getReturnBet(pots, shouldReturn);
 
-        if (!!returnSeatIndex)
+        if (returnSeatIndex !== undefined)
+        {
             this._returnedSidePot = true;
+            this.emit('animation', {"type":"returnSidePot","amount":returnBet,"returnSeatIndex":returnSeatIndex});
+        }
+           
 
         players.forEach(seat => {
             if (seat.index === returnSeatIndex) {
-                const money = round2(seat.money! + (returnBet ?? 0));
+                const money = floor4(seat.money! + (returnBet ?? 0));
                 this.log(`Seat#${seat.index}(${seat.player?.name}): returnMoney: +$${returnBet}, money: $${seat.money!} -> $${money}`);
                 this.logger.info(`Seat#${seat.index}: ${seat.player?.name}: returned ${returnBet} from pot`);
                 seat.money = money;
                 seat.context.money = money;
-                seat.context.bet = seat.context.bet! - (returnBet ?? 0);
-                this._context.lastBet = this._context.lastBet - (returnBet ?? 0)
             }
         });
     }
@@ -1378,7 +1660,7 @@ export abstract class Table extends EventEmitter {
 
     protected nextTurn() {
         this._context.nextTurn();
-
+        
         this.startCurrentTurn();
     }
 
@@ -1388,7 +1670,11 @@ export abstract class Table extends EventEmitter {
         this.emit('turn', this._context.turn);
 
         if (this._context.turn === undefined)
+        {
+            this.lastAction.actionType = "turnUndefined";
             return;
+        }
+            
 
         this.startTurnTimer();
 
@@ -1422,11 +1708,7 @@ export abstract class Table extends EventEmitter {
         const allInSeats = this._context.getPlayingSeats()
             .filter(seat => seat.lastAction === 'allin');
         if (allInSeats.length > 0) {
-            let pots = this._context.calculatePots();
-
-            if (this._returnedSidePot)
-                pots.pop();
-            const test = _.isEqual(pots, this._lastSidePots);
+            let { pots } = this._context.calculatePots(this._returnedSidePot);
 
             const sidePotsForLog = pots.map(pot => {
                 const seats = pot.seats.map(seat => {
@@ -1496,8 +1778,43 @@ export abstract class Table extends EventEmitter {
 
         this.onResult();
         this.emit('result');
+         this._lastAction = {actionType:"endRound",lastActionTime:new Date()};
+        const resultDuration = 2000 * (this._result?.pots.length ?? 0);
+        let delay = 0;
+        const pendingSidebetsState = this.getPendingSidebetState().filter(state => state > SideBetState.PreCards);
+        if (!!pendingSidebetsState  && this.options.sideBetEnabled) {
+            this._context.dealExtraCards(Math.max(...pendingSidebetsState));
+            for (let i = 0; i < pendingSidebetsState.length; i++) {
+                const pendingSidebetState = pendingSidebetsState[i];
+                setTimeout(() => this.emit('missedsidebet', pendingSidebetState), 500 + resultDuration);
+                setTimeout(() => this.emit('sidebetcheck', pendingSidebetState), 1000 + resultDuration);
+            }
+            delay += 1000;
+        }
 
-        setTimeout(() => this.endRound(), 1000 + 2000 * (this._result?.pots.length ?? 0));
+        this.emit('winInsurance',this.getInsurancePlayers);
+
+        // Server sends JSON string to all users for verification
+        if(!!this._jsonString && !!this._shuffleKey)
+            this.emit('verifyJsonString',{jsonString:this._jsonString,seed:this._shuffleKey,pfCount:this._context.pfCount,commonCards:this._context.cards});
+
+        setTimeout(() => this.endRound(), 1000 + delay + resultDuration);
+    }
+
+    private getPendingSidebetState() {
+        const seats = this.getAllPlayers();
+        const sidebetStates = [] as SideBetState[];
+
+        for (const seat of seats) {
+            const player = seat.player as Player;
+            player.currentSideBets?.map(sidebet => {
+                if (sidebetStates.indexOf(sidebet.street) < 0) {
+                    sidebetStates.push(sidebet.street);
+                }
+            });
+        }
+
+        return sidebetStates;
     }
 
     private async doShowCards() {
@@ -1508,11 +1825,14 @@ export abstract class Table extends EventEmitter {
         const sidePotWinners = this.getSidePotsWinners();
 
         const raisedSeats = this.getPlayingSeats()
-            .filter(seat => !(seat.context.fold ?? false) && seat.context.lastAction === 'raise')
+            .filter(seat => !(seat.context.fold ?? false) && (seat.context.lastAction === 'raise' || (seat.context.lastAction === "allin" && seat.context.lastActionState === this._context.prevState)))
             .sort((a, b) => (b.context.lastBet ?? 0) - (a.context.lastBet ?? 0));
 
-        let firstSeat = raisedSeats.length > 0 ? raisedSeats[0] : this._seats[this._context.seatOfSmallBlind ?? this._context.seatOfBigBlind!];
 
+        const lastSeatIndex = (this._context.seatOfSmallBlind !== undefined && this._context.seatOfSmallBlind !== this._context.seatOfDealer) ? this._context.seatOfSmallBlind : this._context.seatOfBigBlind;
+        
+        let firstSeat = raisedSeats.length > 0 ? raisedSeats[0] : this._seats[lastSeatIndex!];
+        
         // if (raisedSeats.length > 0) {
         //     raisedSeats.forEach(seat => {
         //         if (seat.context.lastBet! > (firstSeat.context.lastBet!))
@@ -1522,7 +1842,11 @@ export abstract class Table extends EventEmitter {
         // }
 
         if (!(firstSeat.context.fold ?? false))
+        {
             this.emit('showcards', firstSeat);
+            await delay(2000);
+        }
+            
 
         if (firstSeat == undefined) { console.log(this._context.seatOfSmallBlind)}
         let firstIndex = firstSeat.index;
@@ -1544,7 +1868,7 @@ export abstract class Table extends EventEmitter {
                 this.emit('muckcards', seat);
             }
 
-            await delay(1000);
+            await delay(2000);
         }
 
     }
@@ -1553,10 +1877,7 @@ export abstract class Table extends EventEmitter {
 
     private getSidePotsWinners() {
         let winners: TableSeat[] = [];
-        let pots = this._context.calculatePots();
-
-        if (this._returnedSidePot)
-            pots.pop();
+        let { pots } = this._context.calculatePots(this._returnedSidePot);
 
         pots.forEach((pot) => {
             const seats = pot.seats.map(seat => this._seats[seat.index]);
@@ -1569,17 +1890,10 @@ export abstract class Table extends EventEmitter {
     protected calculateResult() {
         const players = this.getPlayingSeats();
         const results: TablePotResult[] = [];
-        const lastRaise = this.calculateLastRaise();
 
         const potResult: Array<any> = [];
         const sidePots: Array<any> = [];
-        let pots = this._context.calculatePots();
-
-        if (this._returnedSidePot)
-            pots.pop();
-        // const {returnSeatIndex, returnBet} = this._context.getReturnBet(pots);
-        // if (!!returnBet)
-        //     pots.pop();
+        let { pots } = this._context.calculatePots(this._returnedSidePot);
 
         this.log(`Side POTs.`);
         pots.forEach((pot, i, pots) => {
@@ -1601,22 +1915,23 @@ export abstract class Table extends EventEmitter {
         pots.forEach((pot, i, pots) => {
             const seats = pot.seats.map(seat => this._seats[seat.index]);
 
-            const rake = this.calculateRake(seats, (i === pots.length - 1) ? round2(pot.amount - lastRaise) : pot.amount);
-            this._roundRake = round2(this._roundRake + rake);
-            const amount = round2(pot.amount - rake);
+            const rake = this.calculateRake(seats, pot.amount);
+            this._roundRake = floor4(this._roundRake + rake);
+            const amount = floor4(pot.amount - rake);
 
             const result = this.splitPot(seats, amount);
             this.log(`POT#${i}: amount: $${pot.amount}, number of winners: ${result.winners.length}, prize: $${result.prize}, rake: $${rake}`);
             this.logger.info(`POT#${i}: amount: ${pot.amount}, number of winners: ${result.winners.length}, prize: ${result.prize}, rake: ${rake}`);
 
             const winners: Array<any> = [];
-            result.winners.forEach(seat => {
-                this.log(`Seat#${seat.index}(${seat.player?.name}): Prize: +$${result.prize}`);
-                seat.prize = round2(seat.prize! + result.prize);
+            result.winners.forEach((seat, index) => {
+                const prize = index !== result.winners.length - 1 ? result.prize : result.amount - result.prize * (result.winners.length - 1);
+                this.log(`Seat#${seat.index}(${seat.player?.name}): Prize: +$${prize}`);
+                seat.prize = floor4(seat.prize! + prize);
                 winners.push({
                     "user_id"   : (seat.player as Player)?.id,
                     "seat"      : `Seat#${seat.index}`,
-                    "collect"   : result.prize,
+                    "collect"   : prize,
                 })
             });
 
@@ -1632,21 +1947,24 @@ export abstract class Table extends EventEmitter {
         this.log(`Giving prizes.`);
         players.forEach(seat => {
             if (seat.prize! > 0) {
-                const money = round2(seat.money! + seat.prize!);
+                const money = floor4(seat.money! + seat.prize!);
+                const rank = (seat.hand?.rank !== undefined) ? HandRank[seat.hand!.rank] : "";
+                const winnerCards = (seat.hand?.cards !== undefined) ? seat.hand?.cards.join(",") : seat.context.cards?.join(",");
+                this.emit('log', {log:`${seat.player?.name} Won ${seat.prize}, With: [${winnerCards}] ${rank}`,seat:seat.index,avatar:seat.player?.avatar,Balance: money});
                 this.log(`Seat#${seat.index}(${seat.player?.name}): prize: +$${seat.prize}, money: $${seat.money!} -> $${money}`);
                 this.logger.info(`Seat#${seat.index}: ${seat.player?.name}: collected ${seat.prize} from pot`);
                 seat.money = money;
             }
 
             // if (seat.index === returnSeatIndex) {
-            //     const money = round2(seat.money! + (returnBet ?? 0));
+            //     const money = floor4(seat.money! + (returnBet ?? 0));
             //     this.log(`Seat#${seat.index}(${seat.player?.name}): returnMoney: +$${returnBet}, money: $${seat.money!} -> $${money}`);
             //     this.logger.info(`Seat#${seat.index}: ${seat.player?.name}: returned ${returnBet} from pot`);
             //     seat.money = money;
             // }
         });
 
-        this._totalRake = round2(this._totalRake + this._roundRake);
+        this._totalRake = floor4(this._totalRake + this._roundRake);
         this.log(`Rake: round: $${this._roundRake}, total: $${this._totalRake}`);
         this.logger.info(`Rake: ${this._roundRake}`);
 
@@ -1678,7 +1996,7 @@ export abstract class Table extends EventEmitter {
 
     public addSelfOutPlayer(seat?: TableSeat) {}
 
-    protected getLeavePlayers() {}
+    public getLeavePlayers() {}
 
     public getStayPlayers() {}
 
@@ -1707,9 +2025,10 @@ export abstract class Table extends EventEmitter {
                 return this._roundLog.init_state.data.filter((data: any) => data.user_id == userId).length > 0;
             })
             .reduce((lastSum: number, current: TableSeat) => lastSum + (current.money ?? 0), 0)
-            + this._roundLog.showdown.Rake;
+            + this._roundLog.showdown.Rake + this._roundTip;
 
         console.log("initialSum => ", initialSum);
+        console.log("roundTip => ", this._roundTip);
         this._roundLog.StartBalance = [];
 
         this._roundLog.init_state.data.map((seat :any) => {
@@ -1735,70 +2054,23 @@ export abstract class Table extends EventEmitter {
 
         console.log("CheckSum => ", initialSum == lastSum);
 
-        return Math.abs(initialSum - lastSum) < 0.001;
-    }
+        this.log(`initialSum : ${initialSum} - lastSum : ${lastSum} = ${Math.abs(floor4(initialSum) - floor4(lastSum))}`)
 
-    public checkTotalTableWallet(value?: number, rakeWithdraw?: number) {
-        this._walletBalance = value || this._walletBalance;
-        const tableChips = this._seats.map(seat => seat.money);
-        const playerWallets = this._seats.map(seat => seat.player ? (seat.player as Player).tableBalance : 0);
-        this._totalRake -= rakeWithdraw || 0;
-
-        const tableWallet = this._totalRake + [...tableChips, ...playerWallets].reduce((tableWallet: number, current: any) => tableWallet + (current || 0), 0);
-        const status = Math.abs(this._walletBalance - tableWallet) < 0.001;
-
-        if (status) {
-            const usersBalance = this._seats.filter(seat => seat.player)
-                                .map(seat => {
-                                    const player = seat.player as Player;
-                                    return {
-                                        user: player.id,
-                                        on_table: seat.money,
-                                        on_poket: player.tableBalance
-                                    }
-                                });
-            this._roundLog["users_balance"] = {
-                table_balance: this._walletBalance,
-                rake_balance: this._totalRake,
-                users_balance: usersBalance
-            };
-        }
-
-        return status;
+        return Math.abs(floor4(initialSum) - floor4(lastSum)) < 0.001;
     }
 
     protected calculateLastRaise() {
         const bets = this._context.getPlayingSeats().map(seat => seat.bet ?? 0).sort((a,b) => b-a);
-        return round2(bets[0] - bets[1]);
+        return floor4(bets[0] - bets[1]);
     }
 
     protected calculateRake(seats: TableSeat[], amount: number) {
-        if (seats.length === 1)
-            return 0;
-
-        if (this._context.checkOnePlayerRemaining()) {
-            if (!this.options.rakePreFlop && this._preflopFold)
-                return 0;
-        }
-        else {
-            const winners = this.getWinners(seats);
-            if (winners.length > 1 && !this.options.rakeSplitPot)
-                return 0;
-        }
-
-        let rake;
-
-        if (this.options.rakeCap! !== 0)
-            rake = Math.min(this.options.rakeCap!, amount * this.options.rake! / 100);
-        else
-            rake = amount * this.options.rake! / 100;
-
-        return this.options.rakeRound ? round0(rake) : round2(rake);
+        return 0;
     }
 
     protected splitPot(seats: TableSeat[], amount: number): TablePotResult {
         const winners = this.getWinners(seats);
-        const prize = winners.length > 0 ? round2(amount / winners.length) : 0;
+        const prize = winners.length > 0 ? floor4(amount / winners.length) : 0;
         return { amount, winners, prize, };
     }
 
@@ -1810,6 +2082,35 @@ export abstract class Table extends EventEmitter {
         seats = seats.filter(seat => seat.hand !== undefined);
         return solveWinners(seats.map(seat => seat.hand!))
             .map(hand => seats.find(seat => seat.hand === hand)!);
+    }
+
+    public getErorrReportReason(mode:"cash" | "tournament"){
+        var reason = "Get unidentified error please check in log";
+        const seat= this._seats[this.lastAction.seat!];
+        const totalPlayers = this.getAllPlayers().length - this.getSitOutSeats().length;
+
+        if(mode === "tournament" && totalPlayers <= 1)
+            reason = `Table ${this.options.name} 1 player did not migrate to another table in`;
+        else if(this._lastAction.actionType === "bet")
+            reason = `No new action found after ${seat?.player?.name} action`;
+        else if(this.lastAction.actionType == "endRound")
+            reason = `New round not started after round ${this.round}`;
+        else if(this.lastAction.actionType == "changeState")
+            reason = `No new action after ${RoundState[this._context.state]} state initialization`;
+        else if(this.lastAction.actionType == "newPlayerJoin")
+            reason = `No new action found after ${seat?.player?.name} join`;
+        else if(this.lastAction.actionType == "playerSitOut")
+            reason = `No new action found after ${seat?.player?.name} sitout`;
+        else if(this.lastAction.actionType == "playerSitIn")
+            reason = `No new action found after ${seat?.player?.name} sitin`;
+        else if(this.lastAction.actionType == "tournamentBreakEnd")
+            reason = `No new action found after tournament break end`;
+        else if(this.lastAction.actionType == "turnUndefined")
+            reason = `In round ${this._round} ${RoundState[this._context.state]} state game is stuck because of undefined trun`;
+        else if(this.lastAction.actionType == "tournamentStart")
+            reason = `No new action after tournament start`;
+            
+        return reason;
     }
 
     public getRoundResult() {
@@ -1830,23 +2131,42 @@ export abstract class Table extends EventEmitter {
         return seats.length === 1 ? [] : seats;
     }
 
-    protected endRound() {
+     protected async endRound() {
         this.log(`ROUND END`);
 
         this._context.reset();
         this._result = undefined;
-        this.emit('winInsurance',this.getInsurancePlayers);
+        
 
-        this._seats.forEach(seat => {
-
+        for (let index = 0; index < this._seats.length; index++) {
+            const seat = this._seats[index];
             if (seat.state === TableSeatState.Playing) {
                 seat.state = TableSeatState.Waiting;
                 this.emit('seat', seat);
             }
+            const player = (seat.player as Player);
+            if(player?.kikckByAdmin == true)
+                await this.leave(seat);
+        }
+                
+        for (let index = 0; index < this._wrongHashPlayers.length; index++) {
+            const player = Number(this._wrongHashPlayers[index]);
+            const seat = this._seats[player];
+            if(seat)
+            {
+                this.emit('message', seat, false,  getErrorMessage("wronghashError"));
+                this.emit('reportplayer',seat,'mismatch_hash');
+                await this.leave(seat);
+            }
+        }
+        
+        /*this._seats.forEach(seat => {
+
+           
             // else if (seat.state === TableSeatState.SitOut) {
             //     seat.play = undefined;
             // }
-        });
+        });*/
 
         this.onEnd();
         this.emit('end');
@@ -1890,6 +2210,7 @@ export abstract class Table extends EventEmitter {
 
         this.log(`Seat#${seat.index}(${seat.player?.name}): State changed to Joining.`);
         this.emit('message', seat, true, `State changed to Joining.`);
+        this.startJoiningTimeout(seat);
 
         return true;
     }
@@ -1897,11 +2218,18 @@ export abstract class Table extends EventEmitter {
     public sitOut(seat: TableSeat) {
         if (seat.state !== TableSeatState.Playing && seat.state !== TableSeatState.Waiting) {
             this.log(`Seat#${seat.index}(${seat.player?.name}): Player is not waiting or playing. Discarding sitout.`);
-            this.emit('message', seat, false, `Player is not waiting or playing. Discarding sitout.`);
+            this.emit('message', seat, false,  getErrorMessage("sitoutMessage"));
             return false;
         }
 
+       /* if ((seat.player as Player).hasSidebet(SideBetState.PreCards)) {
+            this.log(`Seat#${seat.index}(${seat.player?.name}): Player has pending side bet on next cards. Discarding sitout.`);
+            this.emit('message', seat, false, `Player has pending side bet on next cards. Discarding sitout.`);
+            return false;
+        }*/
+
         seat.state = TableSeatState.SitOut;
+        seat.play = undefined;
 
         if (this._context.turn === seat.index)
             this.action(seat, 'fold');
@@ -1918,10 +2246,10 @@ export abstract class Table extends EventEmitter {
         return true;
     }
 
-    public sitIn(seat: TableSeat) {
+    public async sitIn(seat: TableSeat) {
         if (seat.state !== TableSeatState.SitOut) {
             this.log(`Seat#${seat.index}(${seat.player?.name}): Player is not sitout. Discarding sitin.`);
-            this.emit('message', seat, false, `Player is not sitout. Discarding sitin.`);
+            this.emit('message', seat, false,  getErrorMessage("sitinMesage"));
             return false;
         }
 
@@ -1937,6 +2265,9 @@ export abstract class Table extends EventEmitter {
         this.onSitIn(seat);
 
         this.clearSitOutTimeout(seat);
+	
+        if(seat.context.isDeadCards)
+            await delay(1000 * 5);
 
         this.log(`Seat#${seat.index}(${seat.player?.name}): Sitin success.`);
         this.emit('message', seat, true, `Sitin success.`);
@@ -1955,7 +2286,7 @@ export abstract class Table extends EventEmitter {
         
         var totalPlayers = this.getSeats().filter(seat=> seat.state !== TableSeatState.Empty).length;
         console.log(`getSeats : ${totalPlayers}, ${this.getSeats().length <= 1}`);
-        if(totalPlayers <= 1)
+        if(totalPlayers <= 1 || this._submitErrorReport)
             this.scheduleNewRound();
     }
 
@@ -1964,11 +2295,45 @@ export abstract class Table extends EventEmitter {
 
     public startNextLevel(nextLevelOption: any) {}
 
+    protected insurance() {}
+
+    protected removeAllPlayersAndDeleteTable() {}
+
+    protected setSideBetSitoutDeadCards(onlePlayer:boolean = false) {
+     
+
+        if (this.options.sideBetOptions != undefined) {            
+            this.emit('sidebet', {street: 2, options: this.options.sideBetOptions![1]});
+          //  this.emit('sidebetcheck', SideBetState.PreCards);
+        }
+    }
+
     public showAdminMessageForAllPlayers(message: String) {
         this.emit('showadminmessage', message);
     }
 
+    public dealPlayerDeadCardByIndex(seatIndex:number){
+
+    }
+
+    public removePlayerDeadCardByIndex(seatIndex:number){
+
+    }
+    public getTournamentCancelTime(){
+    }
+
     public startTournament() {}
+
+    public setTournamentStartTime() {}
+
+    public setOnePlayerLeft(status:boolean){
+    }
+
+    public checkTotalTableWallet(value?: number, rakeWithdraw?: number) 
+    {
+        return true;
+    }
+    
     public setUsdRate(usdRate: number) {
         this._usdRate = usdRate;
     }

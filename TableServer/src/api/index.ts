@@ -7,7 +7,8 @@ import { TourneyInfo } from '../poker/player';
 import { TimeOptions, TournamentTable } from '../poker/tournament';
 import { TableSeatState } from '../poker/table';
 import { SocketLobby } from '../poker/sockets';
-import { delay } from '../services/utils';
+import { decrypt } from '../services/utils';
+import { getErrorMessage } from '../messages';
 
 function destroy(req: Request, res: Response, next: NextFunction) {
     process.exit();
@@ -32,28 +33,35 @@ function resume(req: Request, res: Response, next: NextFunction) {
 async function players(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
 
-    if (room.isWaitingEndroundRes) {
+    if (room.table.isWaitingEndroundRes) {
         await new Promise((resolve, reject) => {
             room.on('end_round_finished', resolve);
 
             setTimeout(() => {
-                reject(new Error(`Timeout waiting for EndRound API Response`));
+                const errorMessage = getErrorMessage("timeoutError");
+                reject(new Error(errorMessage));
             }, 3000);
         });
     }
 
-    res.json(room.getPlayers().map(player => ({
-        id: player.id,
-        name: player.name,
-        avatar: player.avatar,
-        cash: player.cash,
-        chips: player.chips,
-        joiningDate: player.joiningDate,
-        seat: player.seat === undefined ? undefined : player.seat.state === TableSeatState.Empty ? undefined : {
-            index: player.seat.index,
-            money: player.seat.money,
-        }
-    })));
+    res.json(
+        room.getPlayers()
+        .filter(player => player.seat !== undefined && player.seat.state !== TableSeatState.Empty)
+        .map(player => ({
+            id: player.id,
+            name: player.name,
+            avatar: player.avatar,
+            country: player.country,
+            cash: player.cash,
+            chips: player.chips,
+            joiningDate: player.joiningDate,
+            rating:player.rating,
+            seat: player.seat === undefined ? undefined : player.seat.state === TableSeatState.Empty ? undefined : {
+                index: player.seat.index,
+                money: player.seat.money,
+            }
+        }))
+    );
 }
 
 function kickPlayer(req: Request, res: Response, next: NextFunction) {
@@ -70,10 +78,10 @@ function kickPlayer(req: Request, res: Response, next: NextFunction) {
     res.json({ status: true });
 }
 
-function close_cash_table(req: Request, res: Response, next: NextFunction) {
+function closeTable(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
-    if(room.options.mode != "cash")
-        res.json({ status: false,message:"This Is Not A Cash Game"});
+    /*if(room.options.mode != "cash")
+        res.json({ status: false,message:"This Is Not A Cash Game"});*/
         
     room.table.setClosed(true);
     res.json({ status: true });
@@ -85,7 +93,7 @@ function migratePlayer(req: Request, res: Response, next: NextFunction) {
     const userToken = String(req.params.token);
     const player = room.getPlayer(userToken);
     if (!player) 
-        return res.status(404).json({ status: false, error: 'Player not found' });
+        return res.status(404).json({ status: false, error: getErrorMessage("PlayerError") });
     
     const { server, token } = req.body;
     if (!server || !token)
@@ -120,7 +128,7 @@ function addUser(req: Request, res: Response, next: NextFunction) {
 
     bots.addBot(userToken).then(bot => {
         if (!bot)
-            res.status(404).json({status: false, error: "getUser failed or player already existed"});
+            res.status(404).json({status: false, error: getErrorMessage("addPlayerError")});
         else 
             res.json({ status: true, id: bot!.id });
     });
@@ -131,18 +139,28 @@ async function addUsers(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
     const socketLobby = req.app.locals.context.lobby as SocketLobby;
     const socketRoomContext = socketLobby.getContext(room.id);
+    const tournamentId = String(req.params.tournamentId); 
+    const playersInfo = req.body.data;
 
-    if (room.isWaitingEndroundRes) {
+    if(room.options.mode === 'tournament' && tournamentId !== room.options.tournament_id)
+        return res.json({ status: false,message:getErrorMessage("TournamentError")});
+
+    if(playersInfo === undefined ||playersInfo.length <= 0)
+        return res.json({ status: false,message:getErrorMessage("EmptyData")});
+
+    const isMigratePlayer = playersInfo[0].isMigratePlayer;
+
+    if (room.table.isWaitingEndroundRes && isMigratePlayer !== undefined && isMigratePlayer == true) {
         await new Promise((resolve, reject) => {
             room.on('end_round_finished', resolve);
 
             setTimeout(() => {
-                reject(new Error(`Timeout waiting for EndRound API Response`));
+                    const timeoutError = getErrorMessage("timeoutError");
+                reject(new Error(timeoutError));
             }, 3000);
         });
     }
     
-    const playersInfo = req.body.data
     let successPlayers = [], failedPlayers = [];
 
     for (let i = 0; i < playersInfo.length; ++i) {
@@ -159,16 +177,16 @@ async function addUsers(req: Request, res: Response, next: NextFunction) {
 
 function tourneyInfo(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
-    const infos = req.body.data as TourneyInfo[];
+    const infos = req.body.data as TourneyInfo;
     const players = room.getPlayers();
 
     if (!players)
         return next();
 
     players.map(player => {
-        infos.map(info => {
+        infos.players.map(info => {
             if (info.player_id == player.id) {
-                player.onTourneyInfo(info);
+                player.onTourneyInfo(info,infos.averageStack,infos.biggestStack);
             }
         })
     });
@@ -182,7 +200,7 @@ function updateFreeBalance(req: Request, res: Response, next: NextFunction) {
     const freeBalance = Number(req.params.balance);
     const player = room.getPlayer(userToken);
     if (!player) 
-    return res.status(404).json({ status: false, error: 'Player not found' });
+    return res.status(404).json({ status: false, error:getErrorMessage("PlayerError") });
 
     player.updateFreeBalance(freeBalance);
 
@@ -192,6 +210,7 @@ function updateFreeBalance(req: Request, res: Response, next: NextFunction) {
 function startTournament(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
 
+    room.table.setTournamentStartTime();
     room.table.startTournament();
     
     res.json({status: true});
@@ -205,11 +224,12 @@ function tournamentNextLevel(req: Request, res: Response, next: NextFunction) {
 
     res.json({status: true});
 }
+
 function adminMessage(req: Request, res: Response, next: NextFunction) {
     const room = req.app.locals.context.room as Room;
     const message = req.body.message;
     if(room.options.mode != "cash")
-        res.json({ status: false,message:"This Is Not A Cash Game"});
+        res.json({ status: false,message:getErrorMessage("cashgameError")});
 
     room.table.showAdminMessageForAllPlayers(message);
 
@@ -284,9 +304,9 @@ export default express.Router()
 .get('/resume', resume)
 .get('/players', players)
 .get('/players/:token/kick', kickPlayer)
-.get('/close_cash_table',close_cash_table)
+.get('/close_table',closeTable)
 .get('/players/:token/add', addUser)
-.post('/players/add', addUsers)
+.post('/players/add/:tournamentId?', addUsers)
 .post('/players/:token/migrate', migratePlayer)
 .post('/bots', addBot)
 .post('/tourney/info', tourneyInfo)

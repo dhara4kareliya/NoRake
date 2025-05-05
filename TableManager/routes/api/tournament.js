@@ -16,12 +16,12 @@ function startTournamentNextLevel(req, res, next) {
     .start_tournament_next_level(tournament_id, next_level)
 
     if (!tournament_id) {
-        res.json({ status: false, message: "touranment id is not defined"});
+        res.json({ status: false, message: "Tournament ID is not defined."});
         return;
     }
     
     if (!next_level) {
-        res.json({ status: false, message: "next_level is not defined"});
+        res.json({ status: false, message: "Next level is not defined."});
         return;
     }
 
@@ -36,17 +36,44 @@ function startTournament(req, res, next) {
     .start_tournament(tournament_id)
 
     if (!tournament_id) {
-        res.json({ status: false, message: "touranment id is not defined"});
+        res.json({ status: false, message: "Tournament ID is not defined."});
         return;
     }
 
     res.json({ status: true })
 }
 
+function submit_error(req, res, next) {
+    const tournament_id = req.body.tournament_id;
+    get_table_manager(req.app)
+        .submit_tournament_error(tournament_id);
+    if (!tournament_id) {
+        res.json({ status: false, message: "Tournament ID is not defined." });
+        return;
+    }
+
+    res.json({ status: true })
+}
+
+function closeTournament(req, res, next) {
+    const tournament_id = req.body.tournament_id;
+    if (!tournament_id) {
+        res.json({ status: false, message: "Tournament ID is not defined." });
+        return;
+    }
+    get_table_manager(req.app)
+        .close_tournament(tournament_id);
+
+    res.json({ status: true })
+
+}
+
 
 const router = express.Router()
-.post('/next_level', startTournamentNextLevel)
-.post('/start', startTournament)
+    .post('/next_level', startTournamentNextLevel)
+    .post('/start', startTournament)
+    .post('/submit_error', submit_error)
+    .post('/close', closeTournament);
 
 module.exports = {
     root: '/tournament',

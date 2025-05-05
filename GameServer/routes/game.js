@@ -5,7 +5,7 @@ function game(req, res) {
 }
 
 const router = Router()
-.get('/play', game)
+    .get('/play', game)
 
 module.exports = {
     root: '/game',

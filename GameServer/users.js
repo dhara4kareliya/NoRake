@@ -7,12 +7,13 @@ module.exports = () => {
     const threadTokenToUserMap = new Map()
 
     function getOrCreateUser(username, token) {
-        let user = users.find(i=>i.name == username)
+        let user = users.find(i => i.name == username)
         if (!user) {
             user = {
                 name: username,
                 avatar: "https://nrpoker.net/assets/img/user.png",
-                cash: 10000,
+                country: "India",
+                cash: 10000000000,
                 chips: 500,
                 token: token,
             }
@@ -26,12 +27,13 @@ module.exports = () => {
     }
 
     function addUser(token, user) {
-        
+
         token = token || nanoid()
         user.token = token
         users.push(user)
         usernameToTokenMap.set(user.name, token)
-        tokenToUserMap.set(token, user)
+        tokenToUserMap.set(token, user);
+        console.log(user);
         console.log('add user : ', token);
     }
 
@@ -59,14 +61,16 @@ module.exports = () => {
     function getBot(token) {
         if (!token.startsWith('BOT'))
             return
-        
+
         const username = token
-        let user = users.find(i=>i.name == username)
+        let user = users.find(i => i.name == username)
         if (!user) {
+            const randomNumber = Math.floor(Math.random() * 71) + 1;
             user = {
                 name: username,
-                avatar: "https://nrpoker.net/assets/img/user.png",
-                cash: 10000,
+                avatar: `https://nrpoker.net/assets/images/avatar/${randomNumber}.jpg`,
+                country: 'India',
+                cash: 500000000000000,
                 chips: 500,
                 token: token,
             }
@@ -78,9 +82,9 @@ module.exports = () => {
     }
 
     function getUserForTestToken(token) {
-        if (token.startsWith('BOT') || !token.startsWith('!'))
+        if (token.startsWith('BOT'))
             return
-        
+
         const username = token.substr(1)
         return getOrCreateUser(username, token)
     }

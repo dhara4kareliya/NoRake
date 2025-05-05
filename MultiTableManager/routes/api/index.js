@@ -11,16 +11,28 @@ function getTurn(req, res, next) {
     res.json({status: true})
 }
 
-function addMTTable(req, res, next) {
+function addTable(req, res, next) {
     const socketLobby = req.app.locals.socketLobby;
 
-    console.log(`User (mt: ${req.body.mt}) joined a table\n`, req.body);
+    console.log(`User (token: ${req.body.user_token}) joined a table\n`, req.body);
     
-    const {server, gameType, table_token, mt} = req.body; 
+    const {server, client_url, table_token, user_token} = req.body; 
 
-    socketLobby.addOneTable({server, gameType, table_token}, mt);
+    const status = socketLobby.addTable({server, url: client_url, table_token}, user_token);
     
-    res.json({status: true});
+    res.json({status});
+}
+
+function leave(req, res, next) {
+    const socketLobby = req.app.locals.socketLobby;
+
+    console.log(`User (token: ${req.body.data.userToken}) leave MT client`, req.body.data);
+    
+    const {tableToken, userToken, threadToken} = req.body.data; 
+
+    const status = socketLobby.leaveMT(tableToken, userToken, threadToken);
+    
+    res.json({status});
 }
 
 const router = express.Router()
@@ -49,7 +61,8 @@ const router = express.Router()
     })
 ])
 .get('/turn', getTurn)
-.post('/add_mt_table', addMTTable)
+.post('/add_mt_table', addTable)
+.post('/leave', leave)
 .use((req, res, next) => {
     res.status(404).json({ status: false, error: 'Url not found' })
 })

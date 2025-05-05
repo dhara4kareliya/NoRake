@@ -4,13 +4,13 @@ const options: ServerOptions = {
     port: 11000,
 
     token: 'test_server',
-    
+
     id: 1,
     name: 'TexasHoldem',
-    gameType: 'plo',
+    gameType: 'nlh',
     numberOfSeats: 9,
-    smallBlind: 10,
-    bigBlind: 100,
+    smallBlind: 2,
+    bigBlind: 5,
     timeToReact: 40,
     timebankMax: 20,
     timebankBonus: 2,
@@ -24,7 +24,7 @@ const options: ServerOptions = {
     observerTimeout: 20,
     lostTimeout: 30,
 
-    botCount: 8,
+    botCount: 3,
     botAddInterval: [90, 120],
     botAddCount: 0,
 
@@ -35,6 +35,6 @@ const options: ServerOptions = {
 };
 
 createServer(options)
-.then(() => {
-    console.log(`Cash Game Table server initialized:`, options);
-});
+    .then(() => {
+        console.log(`Cash Game Table server initialized:`, options);
+    });

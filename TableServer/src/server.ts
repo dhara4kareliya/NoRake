@@ -22,6 +22,7 @@ export type ServerOptions = {
     port?: number,
 
     gameServer?: string,
+    multiTableServer?: string,
     avatarServer?: string,
 
     token: string,
@@ -33,7 +34,6 @@ export type ServerOptions = {
     numberOfSeats: number,
     smallBlind: number,
     bigBlind?: number,
-    ante?: number,
     timeToReact?: number,
     timebankMax?: number,
     timebankBonus?: number,
@@ -44,6 +44,10 @@ export type ServerOptions = {
     rakeRound?: boolean,
     observerTimeout?: number,
     sitoutTimeout?: number,
+    sideGame?: boolean,
+    sideBet?: boolean,
+    lowAction?:boolean,
+    isEncryptedShuffling?:boolean,
 
     // bot options
     botCount?: number|[number,number],
@@ -56,12 +60,20 @@ export type ServerOptions = {
     // cash game options
     minBuyIn?: number,
     maxBuyIn?: number,
+    randomTable?:boolean,
+    ante?: number,
 
     // tournament game options
     startTime?: string,
     levels?: TimeOptions[],
     playersInfo?: any[],
     sideBetOptions?: SideBetOptions[][],
+    tournamentRegistrationFee?:number,
+    cancelWaitingTime?:number,
+    isTournamentStarted?:boolean,
+    breakBeforeRoundHour?:number,
+    breakLengthBeforeRoundHour?:number,
+    tournamentName?:string,
 };
 
 export async function createServer(opts: ServerOptions) {
@@ -75,6 +87,7 @@ export async function createServer(opts: ServerOptions) {
     opts.host ??= process.env.HOST ?? 'localhost';
     opts.port ??= Number(process.env.PORT ?? 8081);
     opts.gameServer ??= process.env.GAME_SERVER ?? 'http://localhost:3000/';
+    opts.multiTableServer ??= process.env.MULTI_TABLE_SERVER ?? 'http://localhost:3003/';
     opts.avatarServer ??= process.env.AVATAR_SERVER ?? 'http://localhost:3000/';
     opts.bigBlind ??= opts.smallBlind * 2;
     opts.minBuyIn ??= opts.bigBlind * 20;
@@ -90,7 +103,7 @@ export async function createServer(opts: ServerOptions) {
 
         const http = await createHttpServer({ port: opts.port, app }, logger);
         const io = createSocketServer(http, logger);
-        const game = createGameService({ baseURL: opts.gameServer, tsURL: `${opts.host}:${opts.port}` }, logger);
+        const game = createGameService({ baseURL: opts.gameServer, tsURL: `${opts.host}:${opts.port}`, mtServerUrl: opts.multiTableServer }, logger);
 
         const lobby = createLobby(io, logger);
 
@@ -125,6 +138,10 @@ export async function createServer(opts: ServerOptions) {
             observerTimeout: opts.observerTimeout,
             sitoutTimeout: opts.sitoutTimeout,
             sideBetOptions: opts.sideBetOptions ?? sideBetOptions.get(opts.gameType),
+            sideBetEnabled: opts.sideBet ?? false,
+            sideGameEnabled: opts.sideGame ?? false,
+            lowActionEnabled: opts.lowAction ?? false,
+            isEncryptedShuffling: opts.isEncryptedShuffling ?? false
         };
 
         if (opts.mode === 'cash') {
@@ -132,20 +149,28 @@ export async function createServer(opts: ServerOptions) {
                 ...tableOptions,                
                 minBuyIn: opts.minBuyIn,
                 maxBuyIn: opts.maxBuyIn,
+		        ante: opts.ante ?? 0,
+                isRandomTable: opts.randomTable ?? false,
             };
             table = createCashGame(room, cashTableOptions, logger);
             game.setTable(table);
         }
         else if (opts.mode === 'tournament') {
             const tournamentOptions = {
-                startTime: opts.startTime !== undefined ? moment(opts.startTime, "YYYY-MM-DD HH:mm:ss").valueOf() : moment().valueOf(),
+                startTime: opts.startTime!,
                 timeline: opts.levels ?? [],
+                breakBeforeRoundHour: opts.breakBeforeRoundHour ?? 0,
+                breakLengthBeforeRoundHour: opts.breakLengthBeforeRoundHour ?? 0,
+                isTournamentStarted: opts.isTournamentStarted ?? false,
             };
             const tournamentTableOptions = {
                 ...tableOptions,             
                 ante: opts.ante!,
                 startTime: opts.startTime!,
-                levels: opts.levels!
+                levels: opts.levels!,
+                tournamentRegistrationFee: opts.tournamentRegistrationFee ?? 0,
+                cancelWaitingTime: opts.cancelWaitingTime ?? 20,
+                tournamentName: opts.tournamentName ?? "",
             }
             table = createTournamentGame(room, tournamentTableOptions, tournamentOptions, logger);
             game.setTable(table);
@@ -161,6 +186,13 @@ export async function createServer(opts: ServerOptions) {
         const socketRoomContext = lobby.getContext(room.id);
         
         const playersInfo = opts.playersInfo;
+        if(playersInfo !== undefined && playersInfo.length > opts.numberOfSeats)
+        {
+            room.submitErrorReport(`Table creation time GS sends more than ${opts.numberOfSeats} players`);
+            room.table.submitErrorReport = true;
+        }
+           
+
         if (!!playersInfo) {
             for (let i = 0; i < playersInfo.length; ++i) {
                 if (Boolean(Number(playersInfo[i].is_bot))) {
@@ -170,6 +202,11 @@ export async function createServer(opts: ServerOptions) {
                 }
             }
         }
+        
+        setInterval(()=>{            
+            process.send!({type:"checkTS",msg:"OKAY",id:opts.token});
+        },1000 * 60 * 5);
+        
 
         return app.locals.context = {
             opts,
@@ -194,6 +231,13 @@ export function setpreFlopInsurance(players:[{playerCard:string,index:number,res
        const seat =  app.locals.context.table.getSeatAt(player.index);
        seat.lossPercentage = parseFloat(player.result);
     });
+}
+
+export function setTableErrorReport(status:boolean){
+    const room = app.locals.context.room;
+    room.table.emit("errorreport");
+    room.table.submitErrorReport = true;
+    return true;
 }
 
 async function createLogger(logdir: string, infofilename: string, debugfilename: string, socketfilename: string, errorfilename: string) {

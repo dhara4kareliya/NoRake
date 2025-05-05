@@ -1,13 +1,17 @@
 import { Room } from "./room";
-import { Player } from "./player";
+import { Player, SideBetState } from "./player";
 import { TableSeatState, Table, TableOptions, TableSeat, TableRoundStartContext } from "./table";
 import { PFLogic } from "./pfl";
-import { round2 } from "./math";
+import { floor4,round0 } from "./math";
 import winston from "winston";
 import moment from 'moment';
+import { delay } from '../services/utils';
+import { getErrorMessage } from "../messages";
+
 export interface CashTableOptions extends TableOptions {
     minBuyIn?: number;
     maxBuyIn?: number;
+    ante?:number;
 }
 
 type PlayerContext = {
@@ -32,6 +36,8 @@ export class CashTable extends Table {
         this._seatContexts = [];
         for (let i = 0; i < this.options.numberOfSeats; ++i)
             this._seatContexts.push({});
+
+        this._ante = this.options.ante;
     }
 
     protected onLeave(seat: TableSeat) {
@@ -63,25 +69,37 @@ export class CashTable extends Table {
         const seat = this._seats[this._context.turn!];
         this._turnTimeout = setTimeout(() => {
             this.log(`Seat#${seat.index}(${seat.player?.name}): Turn timer timeout. Fold and sitout.`);
-            this.emit('message', true, `Turn timer timeout. Fold and sitout.`);
-            this.sitOut(seat);
+            this.emit('message', true, getErrorMessage("TurnTimeError"));
+            
+            if ((seat.player as Player).hasSidebet(SideBetState.PreCards)) {
+                this.action(seat, 'fold');
+            }
+            else {
+                this.sitOut(seat);
+            }
         }, (this.options.timeToReact! + seat.timebank!) * 1000);
         this._turnTimer.start();
     }
 
     public buyIn(seat: TableSeat, amount: number) {
-        const money = (seat.money ?? 0);
-        if (money < this._bigBlind!) {
+        const money = (seat.money ?? 0) + (seat.pendingMoney ?? 0);
+        if (money < this._bigBlind! && !this.options.isRandomTable) {
             const newMoney = amount + money;
 
-            if (newMoney < this.options.minBuyIn!) {
+            if (newMoney < this.options.minBuyIn! &&  amount <= 0 ) {
                 this.log(`Seat#${seat.index}(${seat.player?.name}): Player did buy-in below min. buyin: $${amount}, min-buy-in: $${this.options.minBuyIn}. Discarding buy-in.`);
                 return 0;
             }
     
             if (this.options.maxBuyIn !== undefined && newMoney > this.options.maxBuyIn) {
-                amount = round2(newMoney - this.options.maxBuyIn);
+                amount = floor4(this.options.maxBuyIn - money);
             }
+        }
+
+        if (seat.state == TableSeatState.Playing && seat.context.lastAction !== 'fold') {
+            this.emit('message', seat, false, getErrorMessage("AddChips"));
+            seat.pendingMoney = (seat.pendingMoney ?? 0) + amount;
+            return amount;
         }
 
         return super.buyIn(seat, amount);
@@ -101,7 +119,12 @@ export class CashTable extends Table {
             return false;
         }
 
+        if (context.waitForBB !== value) {
+            this.emit('waitforbb', seat, value);
+        }
+
         context.waitForBB = value;
+        
         this.log(`Seat#${seat.index}(${seat.player?.name}): Setting waitforbb success. value: ${context.waitForBB}`);
         return true;
     }
@@ -127,6 +150,8 @@ export class CashTable extends Table {
             mode: 'cash',
             minBuyIn: this.options.minBuyIn,
             maxBuyIn: this.options.maxBuyIn,
+            sidebetBB: this.options.bigBlind,
+            isRandomTable:this.options.isRandomTable,
         };
     }
 
@@ -173,9 +198,9 @@ export class CashTable extends Table {
             if (res.isSB) sum -= this.options.smallBlind;
             if (res.isBB) sum -= this.options.bigBlind;
                 
-            let ante = 0;
-            if (res.missSB || res.sbAnte) {
-                ante = this.options.smallBlind;
+            //let ante = 0;
+             if (res.missSB || res.sbAnte) {
+                //ante += this.options.ante!;
                 sum -= this.options.smallBlind;
             }
             if (res.missBB) {
@@ -185,7 +210,7 @@ export class CashTable extends Table {
             if (!res.emptySit && !res.sitOut) {
                 start.seats.push({
                     index: res.sitIndex,
-                    ante,
+                    ante:this._ante,
                     sum,
                 });
             }
@@ -199,12 +224,41 @@ export class CashTable extends Table {
         return start;
     }
 
-    protected onEnd() {
-        this.getWaitingSeats().forEach(seat => {
-           // if (seat.money! < this.options.bigBlind! && !(seat.player as Player).currentSideBet) {
+    protected async onEnd() {
+        this.getWaitingSeats().forEach(async seat => {
+            seat.money = (seat.money || 0) + (seat.pendingMoney || 0);
+            seat.pendingMoney = undefined;
+
+            const player = seat.player as Player;
+            const status = await player.autoTopUp();
+
             if (seat.money! < this.options.bigBlind!) {
                 this.log(`Seat#${seat.index}(${seat.player?.name}): Player has insufficient money to play. money: $${seat.money}, Waiting buyin.`);
-                this.joining(seat);
+                
+                if (player.hasSidebet(SideBetState.PreCards)) {
+                    setTimeout(() => {
+    
+                        this.dealPlayerDeadCardByIndex(seat.index);
+                        this.emit('missedsidebet', SideBetState.PreCards);
+                        player.sidebetUnclaimed = true;
+                    }, 2000);
+                    
+                    if (this.getPlayingSeats().length <= 1) {
+                        setTimeout(() => this.emit('sidebetcheck', SideBetState.PreCards), 2500);
+                    }
+                }
+
+                if (!status) {
+                    if(this.options.isRandomTable && this.isWaitingEndroundRes)
+                    {
+
+                        await new Promise((resolve, reject) => {
+                            player.room?.on('end_round_finished', resolve);
+                        });
+                    }
+                   if(seat.state !== TableSeatState.Empty)                    
+                    this.joining(seat); 
+                }
             }
             else {
                 const context = this._seatContexts[seat.index];
@@ -216,8 +270,163 @@ export class CashTable extends Table {
         });
     }
 
+    public getLeavePlayers() {
+        return this.leavePlayers.map(leavePlayer => {return {user_token: leavePlayer}});
+    }
+
+    public getStayPlayers() {
+
+        return this.getSeats()
+            .filter(seat => seat.state !== TableSeatState.Empty && seat.money! > 0 && !this.leavePlayers.includes((seat.player as Player)?.id))
+            // .map(seat => {return {user_id: (seat.player as Player)?.id, chips: seat.money}})
+            .map(seat => {return {user_token: (seat.player as Player)?.id}})
+    }
+
     public updateWaitList(players: Player[]) {
         this.emit('waitlist', players);
+    }
+
+    protected async insurance() {
+        const getActivePlayers = this._context.getPlayingSeats().filter(seat => seat.fold !== true);
+        const streetLog = this.getactionLogInfo().filter(action => action.action.includes('allin'));
+        const allinPlayers = getActivePlayers.filter(seat => seat.lastAction == "allin").map(seat => seat.index);
+    
+        if (getActivePlayers.length == 2 && allinPlayers.length == 2 && streetLog.length == 2 && !this._insurance) {
+            await this.CheckWinner();
+            var insuranceDelay = false;
+            var mainPort:number = 0;
+            let  pots  = this.getSidePots();
+
+            pots.forEach(pot => {
+                const allinPlayrsInPot = pot.seats.filter(seat=>allinPlayers.includes(seat.index)).map(seat => seat.index);
+                if(allinPlayrsInPot.length > 0)
+                    mainPort += Number(pot.amount);
+            });
+            if(mainPort >= (this.bigBlind!*20))
+            {
+                this.getPlayingSeats().forEach(seat => {
+                    this.log(`Seat#${seat.index}(${seat.player?.name}),lossPercentage:${seat.lossPercentage}, cards: ${seat.context.cards}}`);                       
+                    
+                    if (seat.lossPercentage !== undefined && seat.lossPercentage < 0.33 && seat.lossPercentage > 0) {
+                        var insurancePrice = (mainPort * seat.lossPercentage * 1.05).toFixed(2);
+                        this.log(`Seat#${seat.index}(${seat.player?.name}) (${mainPort} * ${seat.lossPercentage} * 1.05) = ${insurancePrice}`);
+                        if(Number(insurancePrice) > 0){
+                            insuranceDelay = true;
+                            var opindex = allinPlayers.find(index => index  != seat.index);
+                            var opPlayer = this.getSeatAt(opindex!);
+                            var tablecards = this.getTableCards();
+
+                            this.emit('insurance', { status: true, seatIndex: seat.index, data: { allInPrice:  mainPort, insurancePrice: insurancePrice, cards: seat.context.cards, percentage:(1 - seat.lossPercentage) * 100, opCards : opPlayer.context.cards, opPercentage: (1 - opPlayer.lossPercentage!) * 100, tableCards: tablecards } });
+                        }
+                        
+                    }
+                });
+            }
+            if (insuranceDelay) {
+                this._insurance = true;
+                await delay(1000 * 5);
+                this.emit('insurance', { status: false, data: [] });
+            }
+        }
+    }
+
+    protected calculateRake(seats: TableSeat[], amount: number) {
+        //if (seats.length === 1)
+        //    return 0;
+
+        if (this._context.checkOnePlayerRemaining()) {
+            if (!this.options.rakePreFlop && this.preflopFold)
+                return 0;
+        }
+        else {
+            const winners = this.getWinners(seats);
+            if (winners.length > 1 && !this.options.rakeSplitPot)
+                return 0;
+        }
+
+        let rake;
+
+        if (this.options.rakeCap! !== 0)
+            rake = Math.min(this.options.rakeCap!, amount * this.options.rake! / 100);
+        else
+            rake = amount * this.options.rake! / 100;
+
+        return this.options.rakeRound ? round0(rake) : floor4(rake);
+    }
+
+    public checkTotalTableWallet(value?: number, rakeWithdraw?: number) {
+        this._walletBalance = value || this._walletBalance;
+        const tableChips = this._seats.map(seat => seat.money);
+        const playerWallets = this._seats.map(seat => seat.player ? (seat.player as Player).tableBalance : 0);
+        this._totalRake -= rakeWithdraw || 0;
+
+        const tableWallet = this._totalRake + this._totalTip + [...tableChips, ...playerWallets].reduce((tableWallet: number, current: any) => tableWallet + (current || 0), 0);
+        const status = Math.abs(floor4(this._walletBalance) - floor4(tableWallet)) < 0.001;
+        this.log(`walletBalance : ${this._walletBalance} ,this._totalRake : ${this._totalRake},tableWallet: ${tableWallet},totalTip: ${this._totalTip},  = ${Math.abs(this._walletBalance - tableWallet)}`);
+        if (status) {
+            const usersBalance = this._seats.filter(seat => seat.player)
+                                .map(seat => {
+                                    const player = seat.player as Player;
+                                    return {
+                                        user: player.id,
+                                        on_table: seat.money,
+                                        on_poket: player.tableBalance
+                                    }
+                                });
+            this._roundLog["users_balance"] = {
+                table_balance: this._walletBalance,
+                rake_balance: this._totalRake,
+                users_balance: usersBalance
+            };
+        }
+
+        return status;
+    }
+    
+    protected setSideBetSitoutDeadCards(onlePlayer:boolean = false){
+        let isPlayersHasSidebet = false;
+        this.getAllPlayers().forEach(seat =>{
+            const player =  (seat.player as Player);
+            if((onlePlayer === true || seat.state !== TableSeatState.Playing) === true && player?.hasSidebet(SideBetState.PreCards))
+            {
+               this.dealPlayerDeadCardByIndex(seat.index);
+               isPlayersHasSidebet = true;
+            }
+        });
+
+        if(onlePlayer && isPlayersHasSidebet)
+            this.updateCurrentState();
+
+        if (this.options.sideBetOptions != undefined) {
+            this.emit('sidebet', {street: 2, options: this.options.sideBetOptions![1]});
+            this.emit('sidebetcheck', SideBetState.PreCards);
+        }
+    }
+
+    public dealPlayerDeadCardByIndex(seatIndex:number){
+        const seat = this.getSeatAt(seatIndex);
+        this._context.dealPlayerDeadCardByIndex(seatIndex);
+        seat.context.isDeadCards = true; 
+        this.log(`Player(${seat.player?.name}) : Player get dead cards [${seat.context.cards?.join(",")}]`);
+    }
+
+    public removePlayerDeadCardByIndex(seatIndex:number){
+        const seat = this.getSeatAt(seatIndex);
+        seat.context.isDeadCards = false; 
+    }
+    
+    protected async removeAllPlayersAndDeleteTable(){
+        this.setSideBetSitoutDeadCards(true);
+        await delay(1000 * 2);
+
+        this.emit('closeTable', true);
+        this.getSeats().forEach(seat => {
+            this.leave(seat);
+        });  
+
+        await delay(1000 * 20);
+        process.exit();
+
     }
 }
 
@@ -245,6 +454,25 @@ export class CashGameController {
         this.room.setTable(this.table);
         this.room.on('join', (player) => this.onPlayerJoin(player));
 		this.room.setCurrencyRate();
+
+        setInterval(()=>{
+            const totalPlayers = this.table.getAllPlayers().filter(seat => ![TableSeatState.SitOut,TableSeatState.Joining].includes(seat.state)).length;
+          //  console.log(`totalPlayers : ${totalPlayers}`);
+           
+            if(totalPlayers > 1 && this.table.submitErrorReport === false)
+            {
+                const lastActionTime = this.table.lastAction.lastActionTime.getTime();
+                if(((new Date().getTime() - lastActionTime)/1000) > (2 * (this.table.options.timebankMax! + this.table.options.timeToReact!)))
+                {
+                    console.log(`date : ${new Date()},lastActionTime : ${this.table.lastAction}`);
+                    console.log(`${((new Date().getTime() - lastActionTime)/1000)} > ${2 * (this.table.options.timebankMax! + this.table.options.timeToReact!)}`);
+                    const reason = this.table.getErorrReportReason(this.room.options.mode!);
+                    this.room.submitErrorReport(reason);
+                    this.table.submitErrorReport = true;
+                    this.table.emit('errorreport');
+                } 
+            }
+        },1000);
 		
 		setInterval(()=>{
 			var todayDate = moment(new Date()).format("DD/MM/YYYY");
@@ -281,8 +509,29 @@ export class CashGameController {
             .on('waitforbb', (value) => this.onPlayerWaitForBB(player, value))
             .on('sitoutnexthand', (value) => this.onPlayerSitOutNextHand(player, value))
             .on('joinwaitlist', () => this.onPlayerJoinWaitlist(player))
-            .on('chat', (msg) => this.onPlayerChat(player, msg))
             .on('tip', (tipInfo) => this.onPlayerTip(tipInfo));
+
+            if(this.table?.options.isRandomTable || player.isWaitingPlayer)
+                this.joinPlayerByMigrate(player);
+    }
+
+    private joinPlayerByMigrate(player: Player) {
+        
+        const seat = this.table.getEmptySeats()[0];
+        if (!seat)
+            return;
+        
+        this.sitDown(player, seat);
+        if(player.migratePlayer || player.isWaitingPlayer)
+        {
+            this.log(`Player(${player.name}) buyin. chips: ${player.chips}`);
+            if(player.chips > 1)
+            this.table.buyIn(seat, player.chips);
+
+            player.migratePlayer = false;
+            player.isWaitingPlayer = false;
+        }
+        
     }
 
     private onPlayerJoinWaitlist(player: Player) {
@@ -293,9 +542,6 @@ export class CashGameController {
         this.table.updateWaitList(this.waitingListPlayers);
     }
 
-    private onPlayerChat(player: Player, msg: string) {
-        this.table.doBroadcastChat(player, msg);
-    }
     private onPlayerTip(tipInfo:{msg:string,seat:number}) {
         this.table.doBroadcastTip(tipInfo);
     }
@@ -406,12 +652,12 @@ export class CashGameController {
         if (!checkrejoininterval.status) {
 			//
             this.log(`Need wait 60s to rejoin this game. Leaving now.`);
-            player.sendMessage(false, `There is mandatory ${Math.round(checkrejoininterval.RestOfTime / 1000)} seconds delay if you want to rejoin this game`,{type:"RejoinInterval",RestOfTime:checkrejoininterval.RestOfTime});
+            player.sendMessage(false, `A mandatory ${Math.round(checkrejoininterval.RestOfTime / 1000)}-second delay applies before you can rejoin this game.`,{type:"RejoinInterval",RestOfTime:checkrejoininterval.RestOfTime});
             return;
         }
 
         if (player.cash < this.table.options.minBuyIn!) {
-            player.sendMessage(false, `Not enough balance, please deposit to your account first. min buy in for the table is ${this.table.options.minBuyIn}`);
+            player.sendMessage(false, `Not enough balance. Please deposit funds. Minimum buy-in for this table is ${this.table.options.minBuyIn}.`);
             return;
         }
 
@@ -424,6 +670,7 @@ export class CashGameController {
             return;
         }
 
+        this.table.lastAction ={actionType:"newPlayerJoin",seat:seatIndex,lastActionTime:new Date(new Date().getTime() + (120 * 1000))};
         this.table.sitDown(seat, player);
 
         if (player.seat) {
@@ -469,6 +716,7 @@ export class CashGameController {
             this.log(`Player(${player.name}) didn't sitdown. Discarding sitout.`);
             return;
         }
+        this.table.lastAction ={actionType:"playerSitOut",seat:player.seat.index,lastActionTime:new Date()};
 
         this.table.sitOut(player.seat);
     }
@@ -478,7 +726,8 @@ export class CashGameController {
             this.log(`Player(${player.name}) didn't sitdown. Discarding sitin.`);
             return;
         }
-
+        this.table.lastAction ={actionType:"playerSitIn",seat:player.seat.index,lastActionTime:new Date()};
+       
         this.table.sitIn(player.seat);
     }
 

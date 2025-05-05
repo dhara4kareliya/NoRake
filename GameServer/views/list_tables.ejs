@@ -1,39 +1,97 @@
 <h2>List tables</h2>
 <% if (!locals.tables || !locals.tables.length) { %>
     <div>No tables</div>
-<% } else { %>
-    <table border="1">
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Server</th>
-                <th>Port</th>
-                <th>Name</th>
-                <th>Seat Limit</th>
-                <th>Small Blind</th>
-                <th>Big Blind</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <% for (let table of locals.tables) { %>
+    <% } else { %>
+        <table border="1">
+            <thead>
                 <tr>
-                    <td><%= table.opts.id %></td>
-                    <td><%= table.server.host %></td>
-                    <td><%= table.server.port %></td>
-                    <td><%= table.opts.name %></td>
-                    <td><%= table.opts.numberOfSeats %></td>
-                    <td><%= table.opts.smallBlind %></td>
-                    <td><%= table.opts.bigBlind %></td>
-                    <td>
-                        <a href="/table/play/<%=table.opts.token%>" target="_blank">Play</a>
-                        | <a href="/table/delete/<%=table.opts.token%>">Delete</a>
-                    </td>
+                    <th>ID</th>
+                    <th>Server</th>
+                    <th>Port</th>
+                    <th>Name</th>
+                    <th>Seat Limit</th>
+                    <th>Small Blind</th>
+                    <th>Big Blind</th>
+                    <th>isEncryptedShuffling</th>
+                    <th>Actions</th>
                 </tr>
-            <% } %>
-        </tbody>
-    </table>
-<% } %>
-<div>
-    <a href="/table/create">Create new table</a>
-</div>
+            </thead>
+            <tbody>
+                <% for (let table of locals.tables) { %>
+                    <tr>
+                        <td>
+                            <%= table.opts.id %>
+                        </td>
+                        <td>
+                            <%= table.server.host %>
+                        </td>
+                        <td>
+                            <%= table.server.port %>
+                        </td>
+                        <td>
+                            <%= table.opts.name %>
+                        </td>
+                        <td>
+                            <%= table.opts.numberOfSeats %>
+                        </td>
+                        <td>
+                            <%= table.opts.smallBlind %>
+                        </td>
+                        <td>
+                            <%= table.opts.bigBlind %>
+                        </td>
+                        <td>
+                            <%= table.opts.isEncryptedShuffling %>
+                        </td>
+
+                        <td>
+                            <button onclick="play('<%=table.opts.token%>')">Play</button> | <a href="/table/delete/<%=table.opts.token%>">Delete</a> | <button onclick="Observer('<%=table.opts.token%>')">Observer</button>
+                        </td>
+                    </tr>
+                    <% } %>
+            </tbody>
+        </table>
+        <% } %>
+            <div>
+                <a href="/table/create">Create new table</a>
+            </div>
+            <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js" type="text/javascript"></script>
+            <script>
+                function play(token) {
+
+                    $.ajax({
+                        url: "/table/play/" + token + '/play',
+                        type: "get",
+                        success: function(data) {
+
+                            console.log(data.user);
+                            //  window.open("http://localhost:3000/?t=" + data.token, data.token, '_blank');
+                            // window.open("http://localhost:3000/?t=" + data.token, data.token, 'popup_window');
+                            console.log(screen.autoWidth);
+                            //window.open("http://localhost:3000/?t=" + data.token, data.toke, 'popup_window', 'fullscreen=no, scrollbars=yes,location=yes,resizable=yes');
+                            const width = Math.round(screen.availWidth * 70 / 100);
+                            const height = Math.round(screen.availHeight * 63 / 100);
+                            window.open("http://localhost:3000/?t=" + data.token, data.token, `width=${width},height=${height},left=800,top=500`);
+                        }
+                    });
+                }
+
+                function Observer(token) {
+
+                    $.ajax({
+                        url: "/table/play/" + token + '/Observer',
+                        type: "get",
+                        success: function(data) {
+
+                            console.log(data.user);
+                            //  window.open("http://localhost:3000/?t=" + data.token, data.token, '_blank');
+                            // window.open("http://localhost:3000/?t=" + data.token, data.token, 'popup_window');
+                            console.log(screen.autoWidth);
+                            //window.open("http://localhost:3000/?t=" + data.token, data.toke, 'popup_window', 'fullscreen=no, scrollbars=yes,location=yes,resizable=yes');
+                            const width = Math.round(screen.availWidth * 70 / 100);
+                            const height = Math.round(screen.availHeight * 63 / 100);
+                            window.open("http://localhost:3000/?t=" + data.token + "&Observer=1", data.token, `width=${width},height=${height},left=800,top=500`);
+                        }
+                    });
+                }
+            </script>

@@ -1,4 +1,14 @@
 const axios = require('axios');
+const crypto = require('crypto');
+const encryptionMethod = 'AES-256-CBC';
+const secret = "gffuy7rk6fmu7rkfg7532h6u7cjk09ol"; //must be 32 char length
+const iv = secret.substr(0,16);
+
+function decrypt(encryptedStr) {
+    const decryptor = crypto.createDecipheriv(encryptionMethod, secret, iv);
+    const decypted =  decryptor.update(encryptedStr, 'base64', 'utf8') + decryptor.final('utf8');
+    return decypted.substr(20, decypted.length); 
+};
 
 const delay_500 = () => new Promise(res => setTimeout(res, 500));
 
@@ -17,35 +27,37 @@ class SocketLobby {
     }
 
     async onUserEnter(socket, data, ack) {
-        const userToken = String(data.user_token);
+        const encryptedUser = String(data.user)
+        const tableUrls = data.tableUrls
+
+        const { name, avatar, token : userToken, tables, created_at,rating } = JSON.parse(decrypt(encryptedUser));
+        const tableTokens = tables.map(table => table.table_token);
+        
+        this.userTokenToTableTokens.set(userToken, tableTokens)
+
         console.log(`Player is trying to enter. user token: ${userToken}`);
+        console.log(`avatar: ${avatar}`);
+        console.log(`rating: ${rating}`);
+        console.log(`name: ${name}`);
 
         const _socket = this.getSocket(userToken);
         if (!!_socket) {
-            _socket.disconnect();    
+            _socket.disconnect();
         }
 
         this.sockets.set(userToken, socket)
-        
-        ack(true)
 
-        // const clients = await this.getTSLists(userToken);
-
-        // for (let i = 0; i < clients.length; ++i) {
-        //     const client = clients[i];
-        //     socket.emit('REQ_MT_CLIENT_ADD', client);
-        //     await delay_500();
-        //     // clients.map(client => { socket.emit('REQ_MT_CLIENT_ADD', client) })
-        // }
+        ack(JSON.stringify({ status: true, name: name, rating: rating }));
     }
 
     getSocket(user_token) {
         return this.sockets.get(user_token)
     }
 
+    // deprecated
     async getTSLists(user_token) {
-        const res = await axios.get(`${process.env.GAME_SERVER}/api.php?api=get_mt_user&user_token=${user_token}`)
         console.log(`${process.env.GAME_SERVER}/api.php?api=get_mt_user&user_token=${user_token}`);
+        const res = await axios.get(`${process.env.GAME_SERVER}/api.php?api=get_mt_user&user_token=${user_token}`)
         const urls = res.data.tables.map(table => table.url)
         console.log(res.data);
         const table_tokens = res.data.tables.map(table => table.table_token)
@@ -53,6 +65,22 @@ class SocketLobby {
         this.userTokenToTableTokens.set(user_token, table_tokens)
         
         return res.data.tables
+    }
+
+    async getUserInfo(encryptedUser, tsUrl) {
+        console.log(`${tsUrl}/api/get_user`);
+
+        const params = new URLSearchParams();
+        params.append('encryptedUser', encryptedUser);
+
+        const res = await axios.post(`${tsUrl}/api/get_user`, params);
+
+        console.log(res.data);
+        
+        const userToken = res.data.user_token
+        const tableTokens = res.data.table_tokens
+                
+        return {userToken, tableTokens}
     }
 
     sendTurn(user_token, table_token) {
@@ -65,11 +93,41 @@ class SocketLobby {
         }
     }
 
-    addOneTable(client, user_token) {
+    addTable(client, user_token) {
         const socket = this.sockets.get(user_token);
 
-        if (!!socket) 
-            socket.emit('REQ_MT_CLIENT_ADD', client);
+        let tableTokens = this.userTokenToTableTokens.get(user_token);
+        
+        if (!tableTokens || tableTokens.length == 0 || !socket) {
+            return false;
+        }
+
+        if (tableTokens.includes(client.table_token)) {
+            return false;
+        }
+
+        tableTokens.push(client.table_token);
+        this.userTokenToTableTokens.set(user_token, tableTokens);
+        
+        socket.emit('REQ_MT_CLIENT_ADD', client);
+
+        return true;
+    }
+
+    leaveMT(tableToken, userToken, threadToken) {
+        const socket = this.sockets.get(userToken);
+
+        let tableTokens = this.userTokenToTableTokens.get(userToken);
+
+        if (!!tableTokens) {
+            const index = tableTokens.indexOf(tableToken);
+
+            if (index >= 0) {
+                tableTokens.splice(index, 1);
+                this.userTokenToTableTokens.set(userToken, tableTokens);
+                socket.emit('REQ_MT_CLIENT_LEAVE', threadToken);
+            }
+        }
     }
 }
 

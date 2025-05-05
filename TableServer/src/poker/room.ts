@@ -7,7 +7,9 @@ import { Player, PlayerState, UserMode } from './player';
 import { SocketLobby } from './sockets';
 import { Table, TableSeat, TableSeatState,InsurancePlayer } from "./table";
 import { TournamentGameController } from './tournament';
-import { round2 } from './math';
+import { floor4 } from './math';
+import path from 'path';
+import fs from 'fs';
 
 export interface RoomOptions {
     id: string;
@@ -27,60 +29,11 @@ type PlayerContext = {
     observerTimeout?: NodeJS.Timeout;
 }
 
-type CallbackFunction = (done: () => void) => void;
-
-class Leave {
-    private counter: number = 0;
-    private queue: CallbackFunction[] = [];
-    private isLeaved: boolean = false;
-
-    constructor() {}
-
-    lock(callback: CallbackFunction) {
-        console.log('lock called');
-        
-        
-        this.queue.push(callback);
-
-        if (!this.isLeaved) {
-                this.proceed();
-        }
-    }
-
-    private proceed() {
-        
-        if (this.queue.length === 0) {
-            this.isLeaved = false;
-            return;
-        }
-
-        const callback = this.queue.shift();
-
-        if (callback) {
-            
-            this.isLeaved = true;
-            
-            this.unlock();
-            callback(() => {
-                this.unlock();
-            });
-        }
-    }
-
-    private unlock() {
-        this.isLeaved = false;
-        this.proceed();
-    }
-}
-
 export class Room extends EventEmitter {
     public get id() { return this.options.id; }
     
     private _table!: Table;
     public get table() { return this._table; }
-    
-    private _isWaitingEndroundRes = false;
-    public get isWaitingEndroundRes() { return this._isWaitingEndroundRes; }
 
     private contexts: Map<string, PlayerContext> = new Map();
 
@@ -89,7 +42,7 @@ export class Room extends EventEmitter {
 
         // default options
         this.options.lostTimeout ??= 30;
-        this.options.observerTimeout ??= 40;
+        this.options.observerTimeout ??= 80;
     }
 
     public setTable(table: Table) {
@@ -103,7 +56,9 @@ export class Room extends EventEmitter {
             .on('remove_tournament', (seat) => this.onTournamentRemove())
             .on('end', () => this.onTableRoundResult())
             .on('turn', (turn) => this.onTableTurn(turn))
-            .on('winInsurance', (InsurancePlayers) => this.onWinInsurance(InsurancePlayers));
+            .on('winInsurance', (InsurancePlayers) => this.onWinInsurance(InsurancePlayers))
+            .on('reportplayer',(seat,type)=> this.onReportPlayer(seat,type))
+            .on('reconnectfailed', (msg) => this.submitErrorReport(msg));
 
 
         this.options.maxPlayers ??= this._table.options.numberOfSeats * 2;
@@ -120,10 +75,16 @@ export class Room extends EventEmitter {
             this.logger.debug(`Room(Table#${this._table.id}): Max players limit reached. Discarding this player(${player.name}).`);
             return false;
         }
-
-        if (this.contexts.get(player.id) !== undefined) {
-            this.logger.debug(`Room(Table#${this._table.id}): Player is existed. Discarding this player(${player.name}).`);
-            return false;
+	
+	const isPlayerExist = this.contexts.get(player.id);
+        if (isPlayerExist !== undefined) {
+            const player = isPlayerExist.player;
+            if(player.mode === UserMode.Observer && this.options.mode === "tournament"){
+                this.logger.debug(`Room(Table#${this._table.id}): Player(${player.name}):. Leave from observation mode.`);
+                player.leave({ type: 'observation_leave' })
+            }else {
+                this.logger.debug(`Room(Table#${this._table.id}): Player is existed. Discarding this player(${player.name}).`);
+            }
         }
 
         const context: PlayerContext = {
@@ -145,7 +106,7 @@ export class Room extends EventEmitter {
 
         this.logger.debug(`Room(Table#${this._table.id}): Player(${player.name}) has joined.`);
 
-        if (player.mode === UserMode.Player)
+        if (player.mode === UserMode.Player && !this.table.options.isRandomTable)
             this.startObserverTimeout(context);
         
         player.on('joinwaitlist', () => this.onPlayerJoinWaitlist(player));
@@ -166,6 +127,8 @@ export class Room extends EventEmitter {
         const context = this.contexts.get(player.id);
         if (!context)
             return;
+
+        this.game.notifyLeaveMT(player.id, this.id, player.thread);
 
         this.clearLostTimeout(context);
         this.clearObserverTimeout(context);
@@ -262,34 +225,37 @@ export class Room extends EventEmitter {
     private onTableSitDown(seat: TableSeat) {
         const player = seat.player as Player;
 
-        if(this.options.mode === 'tournament')
+        if(this.options.mode === 'tournament' || player.migratePlayer)
             return;
 
-        this.game.sit(this.id, player.id, seat.index);
+        //this.game.sit(this.id, player.id, seat.index);
 
         this.game.notifyPlayerSitdown(this.id, player.id);
     }
 
     private onTableLeave(seat: TableSeat) {
         const player = seat.player as Player;
-        const leavePlayers = new Leave(); 
-        
-        setTimeout( () => {
-            if (!player.leavePending) {
-                if (this.options.mode === 'cash') {
-                             this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
-                    }             
-                    player.completeLeavePending();
-                }
-            }, 100);
 
-            setTimeout(() => {
-                if (player.exitReason !== undefined) {
-                    if (player.exitReason.type == 'migrate') {
-                        this.game.moveToOtherTable(player.exitReason.server, player.exitReason.info);
-                    }
+        setTimeout(() => {
+            if (!player.leavePending) {
+                if(this.options.mode === 'cash' && (this.table.options.isRandomTable == false || player.exitReason.type != 'migrate')) {
+                    this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
                 }
-            }, 100);
+                player.completeLeavePending();
+            }
+        }, 100);
+
+        if (player.exitReason !== undefined) {
+            if (player.exitReason.type == 'migrate')
+                this.game.moveToOtherTable(player.exitReason.server, player.exitReason.info,this.options.tournament_id!)
+        }
+        
+        setTimeout(()=>{      
+            if(this.table.leavePlayers.length > 0 && this.table.getSeats().filter(seat => seat.state !== TableSeatState.Empty).length < 2)
+            {               
+                this.onTableRoundResult();
+            }
+        },2000);
     }
 
     private onTournamentRemove() {
@@ -297,21 +263,14 @@ export class Room extends EventEmitter {
     }
 
     private async onTableRoundResult() {
-        const leavePlayer = new Leave();
-
         this.getPlayers()
-            .filter(player => player.leavePending === true)
-            .forEach((player, index) => {
-                if (this.options.mode === 'cash') {
-                    setTimeout(async ()=>{
-                        this.logger.debug(`endround leave called`);
-                    leavePlayer.lock(async () => {
-                        this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                    .filter(player => player.leavePending === true)
+                    .map(player => { 
+                        if(this.options.mode === 'cash' && (this.table.options.isRandomTable == false || player.exitReason.type != 'migrate')) {
+                            this.game.leave(this.id, player.id, player.chips + player.tableBalance, this.table.round);
+                        }
+                        player.completeLeavePending();
                     });
-                },15000*index)
-                }
-                player.completeLeavePending();
-            });
 
         const players = this.table.getSeats()
             .filter(seat => seat.state !== TableSeatState.Empty)
@@ -319,9 +278,14 @@ export class Room extends EventEmitter {
                 token: (seat.player as Player).id,
                 seat: seat.index,
                 money: seat.money!,
+                pocketBalance:(seat.player as Player).tableBalance
             }));
 
-        if (players.length === 0) return;
+        if (players.length === 0 && this.options.mode == "tournament") return;
+
+        
+        if(this.table.roundLog.settings === undefined)
+            this.table.roundLog['settings'] = {};
 
         this.table.roundLog.settings.table_id = this.id;
         this.table.roundLog.settings.mode = this.options.mode;
@@ -330,25 +294,39 @@ export class Room extends EventEmitter {
         this.table.roundLog.settings.max_buy_in = this.options.maxBuyIn;
         this.table.roundLog.settings.tournament_id = this.options.tournament_id;
 
-        this.table.roundLog.LeavePlayers = this.table.roundLog.LeavePlayers ?? [];
+        this.table.roundLog.LeavePlayers = (this.options.mode === "tournament") ? this.table.roundLog.LeavePlayers ?? [] : this.table.getLeavePlayers();
         this.table.roundLog.StayPlayers = this.table.getStayPlayers();
 
-        this._isWaitingEndroundRes = true;
-        const {status, tables, isDeleteTable} = await this.game.endRound(this.id, this.table.round, this.table.roundRake, players, this.table.roundLog, this.options.tournament_id);
-        
+        this.table.isWaitingEndroundRes = true;
+        const {status, tables, isDeleteTable, handId} = await this.game.endRound(this.id, this.table.round, this.table.roundRake, players, this.table.roundLog, this.options.tournament_id);
+
         if (status === 3) {
-            setTimeout(() => {
+            for (const player of this.getPlayers()) {
+                player.leave({type: 'kick'});
+            }
+            setTimeout(async () => {
                 // process.exit();
-                for (const player of this.getPlayers()) {
-                    player.leave({type: 'kick'});
-                }
-                
+                await this.getTournamentErrorLogs();
+                await delay(1000);
                 this.game.deleteTournamentTables(this.options.tournament_id!);
-            }, 2000)
+            }, 3000);
+        }else if(status === 2 && this.options.mode === "tournament")
+        {
+            this.table.roundLog.LeavePlayers = [];
+            this.table.setOnePlayerLeft(true);
         }
 
+        if(this.options.mode === "cash" && this.table.leavePlayers.length > 0)
+        {
+            this.table.roundLog.LeavePlayers.forEach((leavePlayer:any)=>{
+                const index = this.table.leavePlayers.indexOf(leavePlayer.user_token);
+                if (index > -1) 
+                    this.table.leavePlayers.splice(index,1);
+            });
+        }
+       
         console.log(`next_table --------------------for table ${this.id}`, tables);
-        if (tables !== undefined) {
+        if (tables !== undefined && this.table.submitErrorReport !== true && this.table.isClosed !== true) {
             let infos : any = [];
 
             tables.map((table: any) => {
@@ -364,30 +342,40 @@ export class Room extends EventEmitter {
                     console.log('migrate player', info.user_id);
                     const { server, token } = info;
 
-                    const currentChips = this.table.getSeats()
-                        .find(seat => (seat.player as Player)?.id === player.id)?.money;
-                        
+                    
+                     let currentChips = this.table.getSeats()
+                        .find(seat => (seat.player as Player)?.id === player.id)?.money!;                    
+
                     const playerInfo = {
                         name: player.name,
                         avatar: player.avatar,
+                        country: player.country,
                         main_balance: player.cash,
                         chips: currentChips ?? player.chips,
+                        tableBalance: player.tableBalance || 0,
                         token: player.id,
                         mode: player.mode,
                         t: player.thread || '',
-                        is_bot: player.name.startsWith("BOT") ? "1" : "0"
+                        is_bot: player.name.startsWith("BOT") ? "1" : "0",
+                        rating:player.rating,
+                        joiningDate:player.joiningDate,
+                        free_balance: player.freeBalance,
+                        isMigratePlayer:true,
+                        isWaitingPlayer:false,
                     };
                     
                     const targetTablePlayers = await this.game.getPlayers(server);
                     if (targetTablePlayers.length >= this._table.options.numberOfSeats) {
                         this.logger.debug(`Abort migration. Target table: (${server}) full`);
                         await this.game.migrationResponse(token, this.table.round, this.options.tournament_id!, false, 'Table overflow');
+                        this.submitErrorReport(`Table overflow in round ${this._table.round}`);
                         continue;
                     }
 
                     if (player.seat === undefined) {
-                        this.game.moveToOtherTable(server, playerInfo);
-                        TournamentGameController.removePendingPlayer(player);
+                        await this.game.moveToOtherTable(server, playerInfo,this.options.tournament_id!);
+                        if(this.options.mode == "tournament")
+                            TournamentGameController.removePendingPlayer(player);
                     }
                     else {
                         player!.leave({
@@ -402,7 +390,7 @@ export class Room extends EventEmitter {
         }
 
         this.emit('end_round_finished');
-        this._isWaitingEndroundRes = false;
+        this.table.isWaitingEndroundRes = false;
         
         if (isDeleteTable) {
             this.logger.debug('Got command to delete table from End Round api');
@@ -410,24 +398,50 @@ export class Room extends EventEmitter {
             process.exit();
         }
 
+        this.table.handId = handId ?? 0;
         this.table.scheduleNewRound();
         // console.log(JSON.stringify(this.table.roundLog));
     }
 
     private async onWinInsurance(InsurancePlayers:InsurancePlayer[]){
-        if (this.options.mode !== "cash") 
-            return true;
         for (const player of InsurancePlayers) {
-            if (player.is_win == true) {
-                const { status } = await this.game.winInsurance(this.id, player.user_id, String(player.insuranceWinAmount),this.table.round);
-                if (status == true && player.index !== undefined) {
-                    const seat = this.table.getSeatAt(player.index);
-                    this.logger.debug(`Seat#${seat.index}: ${seat.player?.name}: collected ${player.insuranceWinAmount} insurance price`);
-                    console.log(`seat.money(${seat.money}) + player.insuranceWinAmount(${player.insuranceWinAmount}) = ${round2(seat.money! + player.insuranceWinAmount)}`)
-                    seat.money = round2(seat.money! + player.insuranceWinAmount);
-                }
+            const winAmount = player.is_win ? player.insuranceWinAmount : 0;
+            const { status } = await this.game.winInsurance(this.id, player.user_id,player.is_win, String(winAmount),this.table.round,this.options.mode ?? "cash",player.insuranceId,this.options.tournament_id);
+            if (player.is_win && status == true && player.index !== undefined && this.options.mode === "cash") {
+                const seat = this.table.getSeatAt(player.index);
+                this.logger.debug(`Seat#${seat.index}: ${seat.player?.name}: collected ${player.insuranceWinAmount} insurance price`);
+                console.log(`seat.money(${seat.money}) + player.insuranceWinAmount(${player.insuranceWinAmount}) = ${floor4(seat.money! + player.insuranceWinAmount)}`)
+                seat.money = floor4(seat.money! + player.insuranceWinAmount);
             }
         }
+    }
+
+    private async onReportPlayer(seat: TableSeat,type:string){
+        const reporter = (seat.player as Player).id;
+        await this.game.submitReport(this.id,this.id,type,'You send wrong hash',this.table.round,reporter);
+    }
+
+    public async getTournamentErrorLogs() {
+        if(this.options.mode !== "tournament") return;
+
+        const cwd = process.cwd();
+        const logdir = path.resolve(cwd,  `./logs/tournament-${this.options.tournament_id!}`);
+        console.log(logdir);
+       const files =  fs.readdirSync(logdir);
+       for (let index = 0; index < files.length; index++) {
+            const file = files[index];
+            var data = "";
+            if(file.includes('-error') && (data = fs.readFileSync(logdir+"/"+file, 'utf8').toString()) != "")
+                await this.game.submitTournamentLog(this.options.tournament_id!,file,data);
+        
+       }
+    }
+
+    public async submitErrorReport(msg:string){
+        this.game.submitErrorReport(this.id,true,this.options.mode??'cash',msg,this.options.tournament_id);
+        
+        if(this.options.mode === "tournament")
+            this.game.submitErrorTOMS(this.options.tournament_id!);
     }
 
     public getPlayers() {

@@ -1,5 +1,6 @@
 const express = require('express')
 const createTableManager = require('../../tablemanager')
+const { lock, unlock } = require("../../locker");
 
 function get_table_manager(app) {
     app.locals.tableManager = app.locals.tableManager || createTableManager()
@@ -34,6 +35,7 @@ function select_table_list_info(table) {
 async function create_table(req, res, next) {
     const opts = req.body;
     let tables = [];
+    await lock("create_table");
 
     for (let i = 0; i < opts.length; ++i) {
         const opt = {
@@ -61,6 +63,7 @@ async function create_table(req, res, next) {
         // .then((table) => tables.push(select_table_info(table)))
         // .catch(next)
     }
+    await unlock("create_table");
 
     res.json({ status: true, tables })
 }
@@ -101,12 +104,17 @@ function delete_tournament_tables(req, res, next) {
     .catch(next)
 }
 
+function check_ms(req, res, next) {
+    res.json({ status: true });
+}
+
 const router = express.Router()
-.get('/', list_tables)
-.post('/', create_table)
-.delete('/:token', delete_table)
-.delete('/tournament/:id', delete_tournament_tables)
-.get('/:id', get_table)
+    .get('/', list_tables)
+    .post('/', create_table)
+    .delete('/:token', delete_table)
+    .delete('/tournament/:id', delete_tournament_tables)
+    .get('/check', check_ms)
+    .get('/:id', get_table)
 
 module.exports = {
     root: '/tables',

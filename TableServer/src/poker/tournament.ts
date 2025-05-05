@@ -6,10 +6,14 @@ import { PFLogic } from "./pfl";
 import winston from "winston";
 import moment, { duration } from 'moment';
 import { delay } from "../services/utils";
+import { getErrorMessage } from "../messages";
 
 export interface TournamentTableOptions extends TableOptions {
     ante: number;
     levels: TimeOptions[],
+    tournamentRegistrationFee:number,
+    cancelWaitingTime:number,
+    tournamentName:string,
 }
 
 export class TournamentTable extends Table {
@@ -22,20 +26,33 @@ export class TournamentTable extends Table {
     private displayAnte?: number = 0;
     private nextSB?: number = 0;
     private nextBB?: number = 0;
+    private nextLevel?: number = 0;
+    private nextAnte?: number =0;
     public currentLevelOption: any;
     public nextLevelOption: any;
     private tournamentStartTime:string = "";
+    public isLevelStart:boolean = false;
 
     private breakTime: boolean = false;
 
     private nextLevelFlag = false;
     private onePlayerTimerInterval?: NodeJS.Timer = undefined;
+    private tournamentRegistrationFee:number = 0;
+    public cancelWaitingTime:string;
+    private tournamentName:string;
+
+    public onePlayerLeft:boolean = false;
 
     constructor(options: TournamentTableOptions, logger: winston.Logger) {
         super(options, logger);
         
         this._roundEnabled= false;
+        this.tournamentRegistrationFee = options.tournamentRegistrationFee;
+        this.tournamentName = options.tournamentName;
         this.tournamentStartTime = (options.levels.length != 0) ? options.levels[0]['time_to_start'] : "";
+        this.cancelWaitingTime =  moment(this.tournamentStartTime).add(options.cancelWaitingTime,'minutes').format("YYYY-MM-DD HH:mm:ss");
+
+
 
         // this.currentLevelOption = {
         //     type: "level", 
@@ -75,7 +92,8 @@ export class TournamentTable extends Table {
     public setNextLevel(nextLevel: any) {
         this.nextSB = nextLevel.smallBlind;
         this.nextBB = nextLevel.bigBlind;
-
+        this.nextLevel = nextLevel.level;
+        this.nextAnte = nextLevel.ante;
         this.nextLevelOption = nextLevel;
     }
 
@@ -87,6 +105,8 @@ export class TournamentTable extends Table {
         this.duration = currentLevel.duration;
         this.nextBB = nextLevel.bigBlind;
         this.nextSB = nextLevel.smallBlind;
+        this.nextLevel = nextLevel.level;
+        this.nextAnte = nextLevel.ante;
 
         this.emit('levelchange');
     }
@@ -113,14 +133,18 @@ export class TournamentTable extends Table {
             ...super.getSettings(),
             mode: 'tournament',
             level: this.level,
-            ante: this._ante,
             duration: this.duration,
             nextSB: this.nextSB,
             nextBB: this.nextBB,
+            nextLevel:  this.nextLevel,
+            nextAnte: this.nextAnte,
             displaySB: this.displaySB,
             displayBB: this.displayBB,
             displayAnte: this.displayAnte,
-            tournamentStartTime: this.tournamentStartTime
+            tournamentStartTime: this.tournamentStartTime,
+            timeDuration: (moment(this.tournamentStartTime, "YYYY-MM-DD HH:mm:ss").valueOf() - moment().valueOf()) / 1000,
+            tournamentName:this.tournamentName,
+            sidebetBB: Math.max(2, Math.ceil(this.tournamentRegistrationFee / 50))
         };
     }
 
@@ -134,13 +158,15 @@ export class TournamentTable extends Table {
 
     protected onLeave(seat: TableSeat) {
         this._pfl.playerLeaves(seat.index);
+    }
 
+    protected checkOnePlayerLeft(){
         if (this.getStayPlayers().length === 1)
             if (!this.onePlayerTimerInterval) {
                 this.onePlayerTimerInterval = setInterval(() => { 
                     
                     this.log(`Stayed player length: ${this.getStayPlayers().length}`);
-                    if (this.getStayPlayers().length != 1) {
+                    if (this.getStayPlayers().length != 1 || this.submitErrorReport) {
                         clearInterval(this.onePlayerTimerInterval!);
                         this.onePlayerTimerInterval = undefined;
                     }
@@ -160,7 +186,7 @@ export class TournamentTable extends Table {
         }
     }
 
-    protected getLeavePlayers() {
+    public getLeavePlayers() {
         return [
             ...this._selfOutPlayers, 
             ...this.getSeats()
@@ -176,7 +202,7 @@ export class TournamentTable extends Table {
         const seat = this._seats[this._context.turn!];
         this._turnTimeout = setTimeout(() => {
             this.log(`Seat#${seat.index}(${seat.player?.name}): Turn timer timeout. Fold and Set Fold Any Bet.`);
-            this.emit('message', true, `Turn timer timeout. Fold and Set Fold Any Bet.`);
+            this.emit('message', true,  getErrorMessage("turnTimerError"));
             this.action(seat, 'fold');
             this.emit('foldanybet', seat);
         }, (this.options.timeToReact! + seat.timebank!) * 1000);
@@ -198,13 +224,23 @@ export class TournamentTable extends Table {
         this._selfOutPlayers.push({user_token: (seat.player as Player)?.id, chips: seat.money})
     }
 
-    public startTournament() {
-        this._roundEnabled = true;
+    public setTournamentStartTime(){
+        this.emit('settournamentStartTime');
+    }
 
-        this.scheduleNewRound();
+    public startTournament() {
+        if(this.isLevelStart)
+            return;
+
+        this.lastAction = {actionType:"tournamentStart",lastActionTime:new Date()};
+        this.isLevelStart = true;
+        this.emit('showCancelTime');
+        this.emit('startlevel');        
     }
 
     public startRound() {
+        
+
         // try to add new players
         this.getWaitingSeats().forEach(seat => {
             if (!(seat.play ?? 0)) {
@@ -232,6 +268,9 @@ export class TournamentTable extends Table {
             if (res.isSB) start.seatOfSmallBlind = res.sitIndex;
             if (res.noBB) start.noBB=res.noBB;
         });
+           
+        if(this.onePlayerLeft && start.seats.length > 1)
+            this.onePlayerLeft = false;
 
         return start;
     }
@@ -261,6 +300,8 @@ export class TournamentTable extends Table {
 
             this.nextLevelFlag = false;
         }
+
+        this.checkOnePlayerLeft();
     }
 
     public startNextLevel(nextLevelOption: any) {
@@ -271,6 +312,7 @@ export class TournamentTable extends Table {
         if (isBreakOptions(this.currentLevelOption)) {
             this.log(`--- BREAK TIME END ---`);
 
+            this._lastAction = {actionType:"tournamentBreakEnd",lastActionTime:new Date()};
             this.currentLevelOption = this.nextLevelOption;
             this.nextLevelOption = nextLevelOption;
             
@@ -279,7 +321,7 @@ export class TournamentTable extends Table {
                 this.setNextLevel(this.nextLevelOption);
 
             this.setBreak(false);
-
+            
             return;
         }
         else if (isLevelOptions(this.currentLevelOption))
@@ -287,6 +329,62 @@ export class TournamentTable extends Table {
         
         this.currentLevelOption = this.nextLevelOption;
         this.nextLevelOption = nextLevelOption;
+    }
+
+    protected async insurance() {
+        const getActivePlayers = this._context.getPlayingSeats().filter(seat => seat.fold !== true);
+        const streetLog = this.getactionLogInfo().filter(action => action.action.includes('allin'));
+        const allinPlayers = getActivePlayers.filter(seat => seat.lastAction == "allin").map(seat => seat.index);
+        if(getActivePlayers.length == 2 && allinPlayers.length == 2 && streetLog.length == 2 && !this._insurance && this.tournamentRegistrationFee > 5)
+        {
+            await this.CheckWinner();
+            var insuranceDelay = false;
+
+            this.getPlayingSeats().forEach(seat => {
+                this.log(`Seat#${seat.index}(${seat.player?.name}),lossPercentage:${seat.lossPercentage}`);                       
+                if(allinPlayers.includes(seat.index) && this._context.getSeat(seat.index).money == 0  && seat.lossPercentage !== undefined && seat.lossPercentage < 0.33 && seat.lossPercentage > 0)
+                {
+                    var insurancePrice = (this.tournamentRegistrationFee * (seat.lossPercentage) * 1.05).toFixed(2);
+                    this.log(`Seat#${seat.index}(${seat.player?.name}) (${this.tournamentRegistrationFee} * (${seat.lossPercentage}) * 1.05) = ${insurancePrice}`);
+                    if(Number(insurancePrice) > 0){
+                        insuranceDelay = true;
+                        var opindex = allinPlayers.find(index => index  != seat.index);
+                        var opPlayer = this.getSeatAt(opindex!);
+                        var tablecards = this.getTableCards();
+                        
+                        this.emit('insurance', { status: true, seatIndex: seat.index, data: { allInPrice:  this.tournamentRegistrationFee, insurancePrice: insurancePrice, cards: seat.context.cards, percentage:(100 - seat.lossPercentage) * 100, opCards : opPlayer.context.cards, opPercentage: (100 - opPlayer.lossPercentage!) * 100, tableCards: tablecards } });
+                    };
+                }
+            });
+
+            if (insuranceDelay) {
+                this._insurance = true;
+                await delay(1000 * 5);
+                this.emit('insurance', { status: false, data: [] });
+            }
+        }
+    }
+
+    protected async removeAllPlayersAndDeleteTable(){
+        this.emit('closeTable', true);
+        await delay(1000 * 5);
+        process.exit();
+    }
+
+    public showTournamentCancelTime()
+    {
+        this.emit('showCancelTime');
+    }
+
+    public getTournamentCancelTime(){
+       const startTimeDuration =  (moment(this.tournamentStartTime, "YYYY-MM-DD HH:mm:ss").valueOf() - moment().valueOf()) / 1000
+        if(startTimeDuration > 0) return 0;
+        
+        return (moment(this.cancelWaitingTime, "YYYY-MM-DD HH:mm:ss").valueOf() - moment().valueOf()) / 1000;
+    }
+
+    public setOnePlayerLeft(status:boolean){
+        this.onePlayerLeft = status;
     }
 }
 
@@ -317,8 +415,11 @@ function isBreakOptions(value: any): value is BreakOptions {
 }
 
 export interface TournamentGameControllerOptions {
-    startTime?: number;
+    startTime?: string;
     timeline: TimeOptions[];
+    breakBeforeRoundHour?: number; 
+    breakLengthBeforeRoundHour?:number;
+    isTournamentStarted:boolean;
 }
 
 export class TournamentGameController {
@@ -326,6 +427,7 @@ export class TournamentGameController {
     private idleTimeout?: NodeJS.Timeout;
     private lastRoundEnd: boolean = true;
     private lastRound: boolean = false;
+    private tournamentStartTime: number = 0;
 
     constructor(private readonly room: Room, private readonly table: TournamentTable, private readonly options: TournamentGameControllerOptions, private readonly logger: winston.Logger) {
     }
@@ -351,6 +453,8 @@ export class TournamentGameController {
         this.room.on('join', (player) => this.onPlayerJoin(player));
         this.table.on('leave', (seat) => this.onLeaveFromTable(seat));
         this.table.on('end', () => this.onRoundEnd());
+        this.table.on('startlevel', () => this.onStartLevel());
+        this.table.on('settournamentStartTime', () => this.onSetTournamentStartTime());
 
         this.run();
     }
@@ -365,6 +469,205 @@ export class TournamentGameController {
 
     private onRoundEnd() {
         this.processPendingPlayers();
+    }
+
+    private onSetTournamentStartTime(){
+        this.options.startTime = moment().format("YYYY-MM-DD HH:mm:ss");
+    }
+
+    private async onStartLevel(){
+        const levels = this.options.timeline;   
+        let levelIndex = 0;
+        const breakDuration =  (this.options.breakLengthBeforeRoundHour ?? 0) * 60;
+        const breakStartTime  = 60 - (this.options.breakBeforeRoundHour ?? 0);
+        var isBreak = false;
+        var time = 0;
+        var tournamentStart = new Date(this.options.startTime!);
+        var nowTime = new Date(moment().valueOf());
+        var firstBreakSkip = moment(this.options.startTime,'YYYY-MM-DD HH:mm:ss').minutes() == moment().minute();
+
+        if(this.tournamentStartTime > 0)
+        {
+            firstBreakSkip = tournamentStart.getMinutes() === breakStartTime; 
+        }
+        
+    
+
+        // Calculate durations for each level
+        for (let index = 0; index < levels.length; index++) {
+            if ((levels.length - 1) === index) {
+                if(levels[index].type == "break")
+                {
+                    var lastTime = new Date(levels[index].time_to_start);
+                    let levelDifferenceTime =  lastTime.getTime() - new Date(levels[index - 1].time_to_start).getTime()
+                    lastTime.setTime(lastTime.getTime() + levelDifferenceTime)
+                    levels.push({...levels[index - 1],time_to_start:moment(lastTime).format("YYYY-MM-DD HH:mm:ss")});
+                } else {
+                    levels[index]["duration"] = 0;
+                    continue;
+                }
+            }
+
+            // Calculate duration between current and next level
+            const currentLevel = levels[index];
+            const nextLevel = levels[index + 1];
+            var duration = (moment(nextLevel.time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf() - moment(currentLevel.time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf()) / 1000;
+            if (this.tournamentStartTime > 1) {
+                this.tournamentStartTime -= duration;
+                if (breakDuration > 0) {
+                    const oldTime = new Date(tournamentStart);
+                    tournamentStart.setTime(tournamentStart.getTime() + (duration * 1000));
+                    const startMinutes = oldTime.getMinutes();
+                    const endMinutes = tournamentStart.getMinutes();
+
+                    if (!firstBreakSkip && ((oldTime.getHours() === tournamentStart.getHours() && startMinutes <= breakStartTime && endMinutes >= breakStartTime) || (oldTime.getHours() < tournamentStart.getHours() && (startMinutes <= breakStartTime || endMinutes >= breakStartTime)))) {
+                        
+                        var oldTimes = new Date(oldTime);
+                        while (oldTimes.getMinutes() != breakStartTime && oldTimes.getTime() <= tournamentStart.getTime()) {
+                            oldTimes.setTime(oldTimes.getTime() + (60 * 1000));
+                        }
+                        var letDuration = (oldTimes.getTime() - oldTime.getTime()) / 1000;
+                    
+                        duration -= letDuration;
+                        this.tournamentStartTime += duration;
+                        if(this.tournamentStartTime < 0)
+                        {
+                            this.tournamentStartTime -= duration;
+                            if (this.tournamentStartTime < 0) {
+                                duration = Math.abs(this.tournamentStartTime);
+                            } else {
+                                duration = 0;
+                                levelIndex++;
+                            }
+                        } else {
+                            this.tournamentStartTime -= breakDuration;
+                            tournamentStart.setTime(tournamentStart.getTime() + (breakDuration * 1000));
+                            if(this.tournamentStartTime < 0)
+                            {
+                                time = breakDuration - Math.abs(this.tournamentStartTime);
+                                isBreak = true;
+                            } else {
+                                tournamentStart.setTime(tournamentStart.getTime() + (duration * 1000));
+                                this.tournamentStartTime -= duration;
+                                if (this.tournamentStartTime < 0) {
+                                    duration = Math.abs(this.tournamentStartTime);
+                                } else {
+                                    duration = 0;
+                                    levelIndex++;
+                                }
+                                time = 0;
+                                isBreak = false;
+                            }
+                        }
+                    } else {
+                        if(firstBreakSkip)
+                            firstBreakSkip = false;
+
+                        if (this.tournamentStartTime < 0) {
+                            duration = Math.abs(this.tournamentStartTime);
+                        } else {
+                            levelIndex++;
+                            duration = 0;
+                        }
+                    }
+                } else {
+                    if (this.tournamentStartTime < 0) {
+                        if(levels[levelIndex].type == "break")
+                        {
+                            time = duration - Math.abs(this.tournamentStartTime);
+                        }
+                        duration = Math.abs(this.tournamentStartTime);
+                    } else {
+                        levelIndex++;
+                        duration = 0;
+                    }
+                }
+            }
+            levels[index]["duration"] = duration;
+        }
+
+        var nextLevel;
+        if((levels.length - 1)  === levelIndex)
+             nextLevel = {type: 'level', duration: 0, smallBlind: 0, bigBlind: 0};
+        else
+             nextLevel = levels[levelIndex + 1];
+
+        if(isBreak)
+        {
+            this.table.setLevel({"time_to_start": "","type": "break",duration:breakDuration - time});
+            this.table.setNextLevel(levels[levelIndex]);
+            this.table.setCurrentDisplayLevel({"time_to_start": "","type": "break",duration:breakDuration - time}, levels[levelIndex]);
+            this.table.setBreak(true,breakDuration - time);
+           
+            nowTime.setSeconds(nowTime.getSeconds() + breakDuration);
+            this.table.lastAction = {actionType:"tournamentStart",lastActionTime:nowTime};
+        }else {
+            
+            this.table.setLevel(levels[levelIndex]);
+            this.table.setNextLevel(nextLevel);
+            this.table.setCurrentDisplayLevel(levels[levelIndex], nextLevel);
+            if(levels[levelIndex].type == "break")
+            {
+                this.table.setBreak(true,levels[levelIndex].duration);
+           
+                nowTime.setSeconds(nowTime.getSeconds() + levels[levelIndex].duration!);
+                this.table.lastAction = {actionType:"tournamentStart",lastActionTime:nowTime};
+            }
+        }
+        this.table.roundEnabled = true;
+        this.table.scheduleNewRound();
+       
+
+        let level = levels[levelIndex];
+        if(breakDuration < 1 && (levels.length - 1)  === levelIndex)
+            return;
+       
+        
+       var levelInterval = setInterval(() => {
+            // Check if level duration is complete and it's time for a break (every 4 levels)
+            time++;
+            
+            const nowMinute = moment().minute();           
+            if(breakDuration > 0 && breakStartTime === nowMinute && !isBreak && !firstBreakSkip)
+            {
+                isBreak = true;
+                time = 0;
+                this.table.setNextLevel({"time_to_start": "","type": "break",duration:breakDuration});
+                this.table.startNextLevel(level); 
+                this.table.setCurrentDisplayLevel({"time_to_start": "","type": "break",duration:breakDuration}, level);
+                return;
+            } else if(breakStartTime !== nowMinute && firstBreakSkip) {
+                firstBreakSkip = false;
+            }
+
+            if (isBreak && time > breakDuration) {
+                // End break and continue with remaining level duration
+                isBreak = false;
+                level.duration!--;
+                time = 0;
+                console.log(`${levelIndex} === ${levels.length - 1}`);
+                
+                if (levelIndex === levels.length - 1) 
+                    this.table.startNextLevel({type: 'level', duration: 0, smallBlind: 0, bigBlind: 0});
+                else
+                     this.table.startNextLevel(levels[levelIndex + 1]);     
+
+                return;
+            }
+            // Handle regular level progression           
+            if (!isBreak && levelIndex < levels.length - 1 && 1 >= level.duration!--) {
+                levelIndex++;
+                level = levels[levelIndex];
+                if (levelIndex === levels.length - 1) {
+                    this.table.startNextLevel({type: 'level', duration: 0, smallBlind: 0, bigBlind: 0});
+                    if(!!levelInterval && breakDuration <= 0)
+                        clearInterval(levelInterval);
+                    return;
+                }
+                this.table.startNextLevel(levels[levelIndex + 1]);                 
+            }
+        }, 1000);
+       
     }
 
     private onLeaveFromTable(seat: TableSeat) {
@@ -396,7 +699,19 @@ export class TournamentGameController {
             const pendingPlayers = TournamentGameController.pendingPlayers;
 
             while (pendingPlayers.length > 0) {
-                const seat = this.table.getEmptySeats()[0];
+                var customOrder = [0,1,2,3,4,5,6,7,8];
+                if(this.table.options.numberOfSeats == 9)
+                     customOrder = [0, 4, 5, 2, 7, 3, 6, 1, 8];
+                else if(this.table.options.numberOfSeats == 6)
+                    customOrder = [0, 3, 4, 1,5,2];
+                
+
+                const seat = this.table.getEmptySeats().sort((a, b) => {
+                    const aPos = customOrder.indexOf(a.index);
+                    const bPos = customOrder.indexOf(b.index);
+                    return (aPos === -1 ? Infinity : aPos) - (bPos === -1 ? Infinity : bPos);
+                  })[0];
+                
                 if (!seat)
                     break;
                 
@@ -411,21 +726,20 @@ export class TournamentGameController {
             .on('action', (action, bet?) => this.onPlayerAction(player, action, bet))
             .on('showcards', () => this.onPlayerShowCards(player))
             .on('sitin', () => this.onPlayerSitIn(player))
-            .on('tip', (tipInfo) => this.onPlayerTip(tipInfo))
-            .on('chat', (msg) => this.onPlayerChat(player, msg));
+            .on('tip', (tipInfo) => this.onPlayerTip(tipInfo));
 
         player.addTableListener();
 
         this.log(`Player(${player.name}) sitdown. seat: ${seat.index}`);
+        this.table.lastAction ={actionType:"newPlayerJoin",seat:seat.index,lastActionTime:new Date(new Date().getTime() + (120 * 1000))};
         this.table.sitDown(seat, player);
 
         this.log(`Player(${player.name}) buyin. chips: ${player.chips}`);
         this.table.buyIn(seat, player.chips);
     }
 
-    private onPlayerChat(player: Player, msg: string) {
-        this.table.doBroadcastChat(player, msg);
-    }
+    
+
     private onPlayerTip(tipInfo:{msg: string,seat:number}) {
         this.table.doBroadcastTip(tipInfo);
     }
@@ -487,36 +801,40 @@ export class TournamentGameController {
         }
 
         await delay(delayedMs);
-     
-        let currentStartTime = startTime;
 
-        const duration_1 = (moment(timeline[1].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf() - moment(timeline[0].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf()) / 1000;
-        const duration_2 = (moment(timeline[2].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf() - moment(timeline[1].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf()) / 1000;
-        this.table.setLevel({...timeline[0], duration: duration_1});
-        this.table.setNextLevel({...timeline[1], duration: duration_2});
-        this.table.setCurrentDisplayLevel({...timeline[0], duration: duration_1}, timeline[1]);
 
-        this.table.startTournament();
-
-        for (let i = 1; i < timeline.length; ++i) {
-            const nextTime = moment(timeline[i].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf();
-
-            const duration = nextTime - currentStartTime;
-            currentStartTime = nextTime;
-
-            if (duration < 0)
-                continue;
-
-            await setTimeoutA(duration);
-
-            if (i === timeline.length - 1) {
-                this.table.startNextLevel({type: 'level', duration: 0, smallBlind: 0, bigBlind: 0});
-                continue;
-            }
-
-            const nextDuration = !!timeline[i + 2] ? (moment(timeline[i + 2].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf() - moment(timeline[i + 1].time_to_start, "YYYY-MM-DD HH:mm:ss").valueOf()) / 1000 : 0; 
-            this.table.startNextLevel({...timeline[i + 1], duration: nextDuration});
+        if(this.options.isTournamentStarted && this.table.isLevelStart === false)
+        {
+            let tournamentStartTime = (moment().valueOf() - moment(this.options.startTime, "YYYY-MM-DD HH:mm:ss").valueOf()) / 1000;
+            if(tournamentStartTime > 0)
+                this.tournamentStartTime = tournamentStartTime;
+            
+            this.table.startTournament();
+        } else {
+            setTimeout(()=>{
+                this.table.showTournamentCancelTime();
+           },5000);
         }
+      
+        this.table.lastAction = {actionType:"tournamentStart",lastActionTime:new Date()};
+        
+        setInterval(()=>{
+            if(this.table.submitErrorReport === false  && this.table.roundEnabled && !isBreakOptions(this.table.currentLevelOption) && !this.table.onePlayerLeft)
+            {
+                let lastActionTime = this.table.lastAction.lastActionTime.getTime();
+                const totalPlayers = this.table.getStayPlayers().length;                
+                if(totalPlayers < 2)
+                    lastActionTime = lastActionTime + (15*60*1000);
+                           
+                if(((new Date().getTime() - lastActionTime)/1000) > (2 * (this.table.options.timebankMax! + this.table.options.timeToReact!)))
+                {
+                    const reason = this.table.getErorrReportReason(this.room.options.mode!);
+                    this.room.submitErrorReport(reason);
+                    this.table.submitErrorReport = true;
+                    this.table.emit('errorreport');
+                } 
+            }
+        },1000);
     }
 
     // private async breakTime(duration: number) {

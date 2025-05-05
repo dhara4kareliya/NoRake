@@ -1,28 +1,43 @@
 import { setTimeout as setTimeoutAsync } from 'timers/promises';
-import { randomChoice, randomElement, randomInRange } from './random';
-import { Player, PlayerState } from './player';
-import { TableSeatState } from "./table";
+import { randomChoice, randomElement, randomInRange, shuffle } from './random';
+import { Player, PlayerState, SideBetState } from './player';
+import { Table, TableSeatState } from "./table";
 import { Room } from './room';
 import { PlayerInfo } from '../services/game';
-import { round0, round2 } from './math';
+import { round0, floor4,floor2 } from './math';
 import winston from 'winston';
-import moment from 'moment';
-import { random } from 'lodash';
+import { dealMe, hit } from './sideGame';
+import { RoundState } from './round';
+import { generateHashAndServerString,verifyJSONFromServer } from '../services/utils';
+import { Card } from './card';
+
 export class BotPlayer extends Player {
-    constructor(logger: winston.Logger, thread: string, info?: PlayerInfo) {
+    
+    private _allHashes?:string;
+    private _randomString?:string;
+    private _hash?:string;
+
+    constructor(logger: winston.Logger, thread: string, info?: any) {
         super(logger);
         this._thread = thread;
         if (!!info)
             this.setInfo(info);
     }
 
-    private setInfo(info: PlayerInfo) {
+    private setInfo(info: any) {
         this._name = info.name;
         this._avatar = info.avatar;
+        this._country = info.country;
         this._cash = info.cash;
         this._chips = info.chips;
         this._id = info.token;
         this._joiningDate = info.joiningDate;
+        this._rating = info.rating;
+        this._freeBalance = info.free_balance;
+        this._migratePlayer = info.isMigratePlayer;
+        this._isWaitingPlayer = info.isWaitingPlayer;
+        if(info.tableBalance !== undefined && info.tableBalance > 0)
+            this._tableBalance = info.tableBalance;
 
         this.log(`Bot(${this._name}): cash: ${this._cash}, chips: ${this._chips}, token: ${this._id}`);
     }
@@ -37,6 +52,9 @@ export class BotPlayer extends Player {
 
     protected async onState() {
         if (this.room?.options.mode === 'tournament')
+            return;
+
+        if(this.room?.options.mode === "cash" && this._migratePlayer && this._isWaitingPlayer && this.table?.options.isRandomTable && this.chips > 1)
             return;
 
         if (this.state == PlayerState.Joining) {
@@ -57,12 +75,14 @@ export class BotPlayer extends Player {
     private listenTable() {
         this.table!
             .on('turn', this.onRoundTurn)
+            .on('cancel_bet', this.onCancelBet)
             .on('result', this.onRoundResult);
     }
 
     private unlistenTable() {
         this.table!
             .off('turn', this.onRoundTurn)
+	    .off('cancel_bet', this.onCancelBet)
             .off('result', this.onRoundResult);
     }
 
@@ -95,18 +115,19 @@ export class BotPlayer extends Player {
         let buyInAmount = 0 as number;
         
         if (this.room?.options.mode === 'cash') {
-            buyInAmount = round0(randomInRange(this.room.options.minBuyIn!, this._cash));
+            buyInAmount = floor2(randomInRange(this.room.options.minBuyIn!, this.room.options.maxBuyIn!));
         }
-        
+
         if (buyInAmount > this.tableBalance) {
             const {status, transferedAmount, updatedGlobalBalance} = await this.room!.game.transferBalance(this.room!.id, this._id, buyInAmount - this.tableBalance + 10)
+            if(!status)
+            {
+                this.log(`Transfer Balance Failed: amount: ${buyInAmount - this.tableBalance + 10}`);
+                return status;
+            }
+            
             this.tableBalance = this.tableBalance + transferedAmount;
             this.globalBalance = updatedGlobalBalance;
-
-            if(status === false){
-                this.leave();
-                return;
-            }
         }
         
         const success = await this.buyIn(buyInAmount);
@@ -131,43 +152,196 @@ export class BotPlayer extends Player {
 
     public async deposit(amount: number) {
         const playerCash = await this.room!.game.deposit(this.room!.id, this._id, amount, this.table!.round);
-        this.tableBalance -= amount;
-        
         if (playerCash === undefined)
             return false;
+
+        this.tableBalance -=  amount;
         return true;
     }
 
-    protected _onTableRoundEnd = () => {
+    protected _onTableRoundEnd = async () => {
         if (this.room?.options.mode === 'tournament') return;
         if (!this._seat) return;
 
-        this.autoTopUp();
     };
 
-    protected async autoTopUp() {
+    protected _onTableRoundState = (state: RoundState) => {
+        if (!this.table?.options.sideGameEnabled || this.table.options.lowActionEnabled) return;
+
+        if ((this._seat?.state === TableSeatState.Playing && (this._seat.context.fold || false)) || this._seat?.state === TableSeatState.SitOut || this._seat?.state === TableSeatState.Waiting) {
+            if (randomChoice(30) < 1) {
+                this.hitGame01();
+            }
+
+            if (randomChoice(30) < 1) {
+                this.dealGame02();
+            }
+        }
+    };
+
+    protected onSideBetOptions(street?: SideBetState, options?: ({betName: string, ratio: number, note: string} | null)[]) {
+        if (!this.table?.options.sideBetEnabled || this.table.options.lowActionEnabled) return;
+
+        if (this._seat?.state === TableSeatState.Playing && !(this._seat.context.fold || false)) {
+            const bigBlind = this.table?.bigBlind!;
+            const betAmounts = [bigBlind * 2, bigBlind * 5, bigBlind * 10];
+            const sidebets = [] as {betName: string, amount: string}[];
+
+            let accuredAmount = 0;
+            let sidebetDone = false;
+            if (randomChoice(30) < 1)
+                options?.forEach(option => {
+                    if (randomChoice(3) < 1) {
+                        const index = randomChoice(3);
+                        const betAmount = (shuffle(betAmounts))[index];
+                        accuredAmount += betAmount;
+                        if (this._freeBalance >= accuredAmount) {
+                            sidebetDone = true;
+                            sidebets.push({
+                                betName: option?.betName!,
+                                amount: betAmount.toString()
+                            });
+                        }
+                    }
+                });
+
+            if (sidebetDone) {
+                this.submitSidebet(Number(street), sidebets);
+            }
+        }
+    }
+
+    protected _onInsurance = (data: { status: boolean, seatIndex: number, data: any }) => {
+        
+        if(this.table?.options.lowActionEnabled || !data.status || data.seatIndex !== this.seat?.index || randomChoice(2) === 0 )
+            return;
+        
+        const insuranceAmount =  Number(data.data.insurancePrice);
+        const insuranceWinAmount = Number(data.data.allInPrice);
+        this.submitInsurance(insuranceAmount,insuranceWinAmount);
+    }
+
+    public onGenerateHashAndRandomString = () =>{
+        const {randomString,hash} = generateHashAndServerString();
+       
+        this._randomString = randomString;
+        this._hash = hash;
+        this.table?.setPlayerHash(this.seat!,hash);
+        this.emit('get_player_hash');
+    };
+
+    public onGetPlayerRandomString = () =>{
+        this.table?.setPlayerRandomString(this.seat!,this._randomString!);
+        this.emit('get_player_random_string');
+        
+    };
+
+    protected _onSendAllHashesToPlayers = (hashes:string) => {
+        this._allHashes = hashes;
+
+        
+    };
+
+    protected _onVerifyJsonString = (data:{jsonString:string,seed:string,pfCount:number,commonCards:Card[]}) => {
+        const { status, message,players } = verifyJSONFromServer(data.jsonString);
+
+        if(!status)
+        {
+                for (let index = 0; index < players.length; index++) {
+                    const player = players[index];
+                    if(player === "server")
+                        continue;
+                    
+                    this.table?.setWrongHashPlayers(player);
+                }
+        } 
+        this.log(message);
+    };
+
+    private async hitGame01() {
+        const betSizes = [1, 2, 4];
+        const index = randomChoice(3);
+        let ratio = betSizes[index];
+        let bigBlind = (this.table?.bigBlind || 0);
+        if(this.room?.options.mode === "tournament")
+        {
+            bigBlind = 1;
+            ratio = ratio * 1;
+        }
+        const {status, betId, freeBalance} = await this.room!.game.submitSideGame(this.room!.id, this._id, ratio * bigBlind, 'game01',this.room?.options.mode,this.room?.options.tournament_id);
+        
+        if (!status) {
+            return;
+        }
+
+        const hitResult = hit();
+        const data = {
+            status: true,
+            ...hitResult,
+            winningRatioBB: hitResult.winningOdd * ratio
+        };
+
+        if (data.winningRatioBB > 0) {
+            const response = await this.room!.game.submitSideGameResult(this.room!.id, this._id, betId, data.winningRatioBB * bigBlind, this.table!.round,this.room?.options.mode,this.room?.options.tournament_id);
+        }
+    }
+
+    private async dealGame02() {
+        const betSizes = [2, 4, 8];
+        const index = randomChoice(3);
+        let ratio = betSizes[index];
+        let bigBlind = (this.table?.bigBlind || 0);
+        if(this.room?.options.mode === "tournament")
+        {
+            bigBlind = 1;
+            ratio = ratio * 1;
+        }
+        const {status, betId, freeBalance} = await this.room!.game.submitSideGame(this.room!.id, this._id, ratio * bigBlind, 'game02',this.room?.options.mode,this.room?.options.tournament_id);
+        
+        if (!status) {
+            return;
+        }
+        const dealResult = dealMe();
+        const data = {
+            status: true,
+            ...dealResult,
+            winningRatioBB: dealResult.winningOdd * ratio / 2
+        };
+
+        if (data.winningRatioBB > 0) {
+            const response = await this.room!.game.submitSideGameResult(this.room!.id, this._id, betId, data.winningRatioBB * bigBlind, this.table!.round,this.room?.options.mode,this.room?.options.tournament_id);
+        }
+    }
+
+    public async autoTopUp() {
         const top = this._topUpMoney ?? 0;
         if (top === 0)
-            return;
+            return false;
 
         const money = (this._seat?.money ?? 0);
         const randomValue = randomInRange(1, top);
 
         if (randomChoice(10) < 3 && money < top) {}
         else if (money < randomValue) {}
-        else return;
+        else return false;
         
-        const amount = round2(top - money);
+        const amount = floor4(top - money);
 
         if (this.tableBalance < amount) 
-            return;
+            return false;
     
-        this.buyIn(amount);
+        return this.buyIn(amount);
     }
 
 
     private onRoundTurn = (turn: number) => {
         if (turn === undefined || turn !== this.seat?.index)
+            return;
+
+        this.ai();
+    }
+    private onCancelBet = (seat: any) => {
+        if (seat === undefined || seat.index !== this.seat?.index)
             return;
 
         this.ai();
@@ -183,18 +357,19 @@ export class BotPlayer extends Player {
             this.log(`AI: Call`);
             return this.action('bet', context.call);
         }
-
-        if (randomChoice(10) < 3) {
+        
+        if (randomChoice(100) < 50 && !this.table?.options.lowActionEnabled) {
             const mult = Math.floor(Math.random() * 3) + 1;
             const [min, max] = context.raise!;
             let raise = min + Math.floor((max-min) * Math.random());
 
-            const random = randomChoice(10);
-            if (random >= 1) {
-                raise = min;
-            }
-            else if (random < 0.025) {
+            const random = randomChoice(100);
+
+            if (random < 2) {
                 raise = max;
+            }
+            else if (random < 100) {
+                raise = min;
             }
                 
             this.log(`AI: Raise: ${raise}`);

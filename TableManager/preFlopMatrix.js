@@ -10,10 +10,10 @@ async function readMatrixCsvFile() {
     var header = rows[0].split(',');
     for (var i = 1; i < rows.length; i++) {
         const columns = rows[i].split(',');
-        columns[0] = columns[0].toUpperCase();
+        columns[0] = columns[0].trim().toUpperCase();
         for (var j = 1; j < columns.length; j++) {
             if (columns[j] != '') {
-                header[j] = header[j].toUpperCase();
+                header[j] = header[j].trim().toUpperCase();
                 if (matrix[columns[0]] == undefined) {
                     matrix[columns[0]] = {};
                     matrix[columns[0]][header[j]] = columns[j];

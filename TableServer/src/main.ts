@@ -1,4 +1,4 @@
-import { createServer, ServerOptions,setpreFlopInsurance } from './server';
+import { createServer, ServerOptions,setpreFlopInsurance,setTableErrorReport } from './server';
 
 type MessageType = 'init' | 'destroy';
 
@@ -36,5 +36,7 @@ process.on('message', (m: Message) => {
     {
         console.log(m.data);
         setpreFlopInsurance(m.data);
+    }else if(m.type == "tournamentGetError"){
+        setTableErrorReport(true);
     }
 })

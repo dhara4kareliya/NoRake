@@ -1,77 +1,101 @@
 <!-- views/contact.ejs -->
 <div class="form-header">
     <h2>Create table</h2>
-  </div>
-  <form method="post" action="/table/create" novalidate>
+</div>
+<form method="post" action="/table/create" novalidate>
     <div class="form-field">
-      <label for="name">Name</label>
-      <input class="input" id="name" name="name" type="text" autofocus/>
+        <label for="name">Name</label>
+        <input class="input" id="name" name="name" type="text" autofocus/>
     </div>
     <div class="form-field">
-      <label for="numberOfSeats">Number of Seats</label>
-      <input class="input" id="numberOfSeats" name="numberOfSeats" type="number" value="9"/>
+        <label for="numberOfSeats">Number of Seats</label>
+        <input class="input" id="numberOfSeats" name="numberOfSeats" type="number" value="9" />
     </div>
     <div class="form-field">
-      <label for="smallBlind">Small Blind</label>
-      <input class="input" id="smallBlind" name="smallBlind" type="number" value="10"/>
+        <label for="smallBlind">Small Blind</label>
+        <input class="input" id="smallBlind" name="smallBlind" type="number" value="10" />
     </div>
     <div class="form-field">
-      <label for="bigBlind">Big Blind</label>
-      <input class="input" id="bigBlind" name="bigBlind" type="number" value="15"/>
+        <label for="bigBlind">Big Blind</label>
+        <input class="input" id="bigBlind" name="bigBlind" type="number" value="15" />
     </div>
     <div class="form-field">
-      <label for="minBuyIn">Min Buy-in</label>
-      <input class="input" id="minBuyIn" name="minBuyIn" type="number" value="100"/>
+        <label for="minBuyIn">Min Buy-in</label>
+        <input class="input" id="minBuyIn" name="minBuyIn" type="number" value="100" />
     </div>
     <div class="form-field">
-      <label for="maxBuyIn">Max Buy-in</label>
-      <input class="input" id="maxBuyIn" name="maxBuyIn" type="number" value="1000"/>
+        <label for="maxBuyIn">Max Buy-in</label>
+        <input class="input" id="maxBuyIn" name="maxBuyIn" type="number" value="1000" />
     </div>
     <div class="form-field">
-      <label for="timeToReact">Time to React</label>
-      <input class="input" id="timeToReact" name="timeToReact" type="number" value="40"/>
+        <label for="timeToReact">Time to React</label>
+        <input class="input" id="timeToReact" name="timeToReact" type="number" value="40" />
     </div>
     <div class="form-field">
-      <label for="timebankMax">Timebank Max</label>
-      <input class="input" id="timebankMax" name="timebankMax" type="number" value="20"/>
+        <label for="timebankMax">Timebank Max</label>
+        <input class="input" id="timebankMax" name="timebankMax" type="number" value="20" />
     </div>
     <div class="form-field">
-      <label for="timebankBonus">Timebank Bonus</label>
-      <input class="input" id="timebankBonus" name="timebankBonus" type="number" value="2"/>
+        <label for="timebankBonus">Timebank Bonus</label>
+        <input class="input" id="timebankBonus" name="timebankBonus" type="number" value="2" />
     </div>
     <div class="form-field">
-      <label for="rake">Rake</label>
-      <input class="input" id="rake" name="rake" type="number" value="5"/>
+        <label for="rake">Rake</label>
+        <input class="input" id="rake" name="rake" type="number" value="5" />
     </div>
     <div class="form-field">
-      <label for="rakeCap">Rake Cap</label>
-      <input class="input" id="rakeCap" name="rakeCap" type="number" value="50"/>
+        <label for="rakeCap">Rake Cap</label>
+        <input class="input" id="rakeCap" name="rakeCap" type="number" value="50" />
     </div>
     <div class="form-field">
-      <label for="rakePreFlop">Rake PreFlop</label>
-      <input class="input" id="rakePreFlop" name="rakePreFlop" type="checkbox" />
+        <label for="rakePreFlop">Rake PreFlop</label>
+        <input class="input" id="rakePreFlop" name="rakePreFlop" type="checkbox" />
     </div>
     <div class="form-field">
-      <label for="rakeSplitPot">Rake Split POT</label>
-      <input class="input" id="rakeSplitPot" name="rakeSplitPot" type="checkbox" />
+        <label for="rakeSplitPot">Rake Split POT</label>
+        <input class="input" id="rakeSplitPot" name="rakeSplitPot" type="checkbox" />
     </div>
     <div class="form-field">
-      <label for="rakeRound">Rake Round</label>
-      <input class="input" id="rakeRound" name="rakeRound" type="checkbox" />
+        <label for="rakeRound">Rake Round</label>
+        <input class="input" id="rakeRound" name="rakeRound" type="checkbox" />
     </div>
     <div class="form-field">
-      <label for="botCount">Number of Bots</label>
-      <input class="input" id="botCount" name="botCount" type="number" value="3"/>
+        <label for="rakePreFlop">Side Game</label>
+        <input class="input" id="sideGame" name="sideGame" value="true" type="checkbox" />
     </div>
     <div class="form-field">
-      <label for="gameType">Game Type</label>
-      <input class="input" id="gameType" name="gameType" value="nlh" type="text"/>
+        <label for="rakeSplitPot">Side Bet</label>
+        <input class="input" id="sideBet" name="sideBet" value="true" type="checkbox" />
     </div>
     <div class="form-field">
-      <label for="mode">Mode</label>
-      <input class="input" id="mode" name="mode" value="cash" type="text"/>
+        <label for="rakeSplitPot">Low Action</label>
+        <input class="input" id="lowAction" name="lowAction" value="true" type="checkbox" />
+    </div>
+    <div class="form-field">
+        <label for="rakeRound">Random Table</label>
+        <input class="input" id="randomTable" name="randomTable" value="true" type="checkbox" />
+    </div>
+    <div class="form-field">
+        <label for="isEncryptedShuffling">isEncryptedShuffling</label>
+        <input class="input" id="isEncryptedShuffling" name="isEncryptedShuffling" value="true" type="checkbox" />
+    </div>
+    <div class="form-field">
+        <label for="botCount">Number of Bots</label>
+        <input class="input" id="botCount" name="botCount" type="number" value="3" />
+    </div>
+    <div class="form-field">
+        <label for="botCount">Ante</label>
+        <input class="input" id="ante" name="ante" type="number" value="0" />
+    </div>
+    <div class="form-field">
+        <label for="gameType">Game Type</label>
+        <input class="input" id="gameType" name="gameType" value="nlh" type="text" />
+    </div>
+    <div class="form-field">
+        <label for="mode">Mode</label>
+        <input class="input" id="mode" name="mode" value="cash" type="text" />
     </div>
     <div class="form-actions">
-      <button class="btn" type="submit">Create</button>
+        <button class="btn" type="submit">Create</button>
     </div>
-  </form>
+</form>

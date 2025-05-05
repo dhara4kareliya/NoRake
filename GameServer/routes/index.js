@@ -13,6 +13,10 @@ module.exports = express.Router()
 .use(table.root, table.router)
 .use(avatar.root, avatar.router)
 .use(game.root, game.router)
+.use('/autofolds',(req, res) => {
+	var autoFold = req.app.locals.autoFold;
+    res.render('autofold.ejs',{autoFold:(autoFold) ? autoFold : '{}'})
+})
 .get('/', (req, res) => {
     res.redirect('/user/info')
 })

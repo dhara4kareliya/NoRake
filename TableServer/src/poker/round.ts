@@ -1,10 +1,10 @@
 import { last } from "lodash";
-import { Card, createDeck, shuffleCards } from "./card";
-import { round2 } from "./math";
+import { Card, createDeck, shuffleCards,encryptedShuffle } from "./card";
+import { equal, floor4 } from "./math";
 import { shuffle } from "./random";
 
 
-export type Action = 'fold' | 'sb' | 'bb' | 'check' | 'call' | 'raise' | 'allin';
+export type Action = 'fold' | 'sb' | 'bb' | 'check' | 'call' | 'raise' | 'allin' | 'ante';
 
 export type Seat = {
     index: number;
@@ -13,11 +13,12 @@ export type Seat = {
     // cards?: [Card, Card];
     cards?: Card[];
     fold?: boolean;
+    isDeadCards?:boolean;
     bet?: number;
     ante?: number;
     lastAction?: Action;
     lastBet?: number;
-    isSidebet?: boolean;
+    lastActionState?:number;
 };
 
 function isPlayingSeat(seat: Seat) {
@@ -38,6 +39,8 @@ export type RoundOptions = {
     numberOfSeats: number;
     randomDeal?: boolean;
     burnCard?: boolean;
+    gameType?:string;
+    isEncryptedShuffling?:boolean;
 };
 
 export type RoundStartOptions = {
@@ -49,6 +52,7 @@ export type RoundStartOptions = {
     seatOfBigBlind?: number;
     gameType: string;
     noBB?:boolean;
+    shuffleKey?:string;
 };
 
 export class Round {
@@ -58,6 +62,9 @@ export class Round {
 
     private _state: RoundState = RoundState.None;
     public get state() { return this._state; }
+    public set state(state_: RoundState) { this._state = state_; }
+    private _prevState:RoundState = RoundState.None;
+    public get prevState(){ return this._prevState;}
     private _smallBlind?: number;
     public get smallBlind() { return this._smallBlind; }
     private _bigBlind?: number;
@@ -86,18 +93,27 @@ export class Round {
     public get turn() { return this._turn; }
     private _prevRaisedSeat?: number;
     public get prevRaisedTurn() { return this._prevRaisedSeat; }
-    private _lastBet?: number;
-    public get lastBet() { return this._lastBet!; }
-    public set lastBet(bet: number) { this._lastBet = bet;}
+    private _minBet?: number;
+    public get minBet() { return this._minBet!; }
+    public set minBet(bet: number) { this._minBet = bet;}
     private _legalRaise?: number;
     public get legalRaise() { return this._legalRaise; }
     private _seatOfRaisedBySmall?: number;
     public get seatOfRaisedBySmall() { return this._seatOfRaisedBySmall; }
     private _bbBeted?: boolean;
 
+    private _shuffleKey?:string;
+    private _pfCount?:number;
+    public get pfCount() { return this._pfCount; }
+
+    private _numberOfPlayers?:number;
+    private _numberOfHoleCards?:number = 2;
+    private _preFlopArray:Card[] = [];
+
     constructor(private _options: RoundOptions) {
         this._options.randomDeal = this._options.randomDeal ?? true;
         this._options.burnCard = this._options.burnCard ?? true;
+        this._gameType = this._options.gameType;
 
         this._seats = [];
         for (let i = 0; i < this._options.numberOfSeats; ++i) {
@@ -116,10 +132,12 @@ export class Round {
             seat.ante = undefined;
             seat.lastAction = undefined;
             seat.lastBet = undefined;
+            seat.isDeadCards = undefined;
+            seat.lastActionState = undefined;
         });
 
         this._state = RoundState.None;
-        this._gameType = undefined;
+        this._prevState = RoundState.None;
         this._deck = undefined;
         this._cards = [];
         this._pot = 0;
@@ -127,12 +145,18 @@ export class Round {
         this._pendingAnte = undefined;
         this._turn = undefined;
         this._prevRaisedSeat = undefined;
-        this._lastBet = undefined;
+        this._minBet = undefined;
         this._legalRaise = undefined;
         this._seatOfBigBlind = -1;
         this._noBB=false;
         this._seatOfDealer = -1;
         this._seatOfSmallBlind = -1;
+        this._shuffleKey = undefined;
+        this._numberOfHoleCards = 2;
+        this._numberOfPlayers = undefined;
+        this._pfCount = undefined;
+        this._preFlopArray = [];
+        this._seatOfRaisedBySmall  = undefined;
     }
 
     public resetStreetPot() {
@@ -141,7 +165,7 @@ export class Round {
 
     public add(index: number, money: number) {
         const seat = this._seats[index];
-        seat.money = round2((seat.money ?? 0) + money);
+        seat.money = floor4((seat.money ?? 0) + money);
     }
 
     public remove(index: number) {
@@ -153,6 +177,8 @@ export class Round {
         seat.ante = undefined;
         seat.lastAction = undefined;
         seat.lastBet = undefined;
+        seat.isDeadCards = undefined;
+        seat.lastActionState = undefined;
     }
 
     public getPlayingSeats() {
@@ -168,7 +194,7 @@ export class Round {
     }
 
     public addAnteToPending(amount: number) {
-        this._pendingAnte = round2((this._pendingAnte ?? 0) + amount);
+        this._pendingAnte = floor4((this._pendingAnte ?? 0) + amount);
     }
 
     public start(opts: RoundStartOptions) {
@@ -181,6 +207,8 @@ export class Round {
         this._seatOfBigBlind = opts.seatOfBigBlind;
         this._noBB=opts.noBB;
         this._state = RoundState.None;
+        this._prevState = RoundState.None;
+        this._shuffleKey = opts.shuffleKey;
 
         this.roundStart();
     }
@@ -188,6 +216,7 @@ export class Round {
     private roundStart() {
         // state
         this._state = RoundState.PreFlop;
+        this._prevState = RoundState.PreFlop;
 
         // ante
         this._pendingAnte ??= 0;
@@ -196,15 +225,15 @@ export class Round {
         this._pot = 0;
         this._streetPot = 0;
         // cards
-        this._deck = this._deck ?? shuffle(createDeck());
+        this._deck = this._deck ?? (!!this._shuffleKey && this._options.isEncryptedShuffling) ? encryptedShuffle(createDeck(),this._shuffleKey!) :  shuffle(createDeck());
         this._cards = [];
 
         this._bbBeted = false;
 
-        this._pot = round2(this._pot + this._pendingAnte);
-        this._streetPot = round2(this._streetPot + this._pendingAnte);
+        this._pot = floor4(this._pot + this._pendingAnte);
+        this._streetPot = floor4(this._streetPot + this._pendingAnte);
 
-        this._lastBet = 0;
+        this._minBet = 0;
         this._turn = this._seatOfDealer!;
         this.nextTurn();
 
@@ -222,22 +251,59 @@ export class Round {
             this.nextTurn();
         }
 
-        this._lastBet = this._bigBlind!;
+        this._minBet = this._bigBlind!;
         this._legalRaise = 0;
+        this.setMinBet();
+
+        this._numberOfPlayers = this.getPlayingSeats().length;
+        if(this._gameType === 'nlh')
+            this._numberOfHoleCards = 2;
+        else if(this._gameType === 'plo' || this._gameType === 'nlh4')
+            this._numberOfHoleCards = 4;
+        else if(this._gameType === 'plo5')
+            this._numberOfHoleCards = 5;
+        else if(this._gameType === 'plo6')
+            this._numberOfHoleCards = 6;
+
+        this._pfCount = this._numberOfHoleCards! * this._numberOfPlayers;
+        for (let i = 0; i < this._pfCount; i++) {
+            this._preFlopArray.push(this._deck.pop()!);
+        }
+
+        this._preFlopArray = shuffle(this._preFlopArray);
+
+    }
+
+    public dealPlayerCardByIndex(seatIndex: number) {
+        const seat = this._seats[seatIndex];
+        this._deck = this._deck ?? shuffle(createDeck());
+
+        this.dealPlayerCard(seat);
+    }
+
+    public dealPlayerDeadCardByIndex(seatIndex: number)
+    {
+        const seat = this._seats[seatIndex];
+        const deck = shuffle(createDeck());
+        if(this._gameType === 'nlh')
+            seat.cards = [deck!.pop()!, deck!.pop()!];
+        else if(this._gameType === 'plo' || this._gameType === 'nlh4')
+            seat.cards = [deck!.pop()!, deck!.pop()!, deck!.pop()!, deck!.pop()!];
+        else if(this._gameType === 'plo5')
+            seat.cards = [deck!.pop()!, deck!.pop()!, deck!.pop()!,deck!.pop()!, deck!.pop()!];
+        else if(this._gameType === 'plo6')
+            seat.cards = [deck!.pop()!, deck!.pop()!, deck!.pop()!, deck!.pop()!, deck!.pop()!, deck!.pop()!];
+    }
+
+   
+
+    private dealPlayerCard(seat: Seat) {
+         seat.cards = this._preFlopArray.splice(0, this._numberOfHoleCards);
     }
 
     public dealPlayerCards() {
-        const pendingSidebetSeat = this._seats.filter(seat => seat.isSidebet);
-
-        [...this.getPlayingSeats(), ...pendingSidebetSeat].forEach(seat => {
-            if(this._gameType === 'nlh')
-                seat.cards = [this._deck!.pop()!, this._deck!.pop()!];
-            else if(this._gameType === 'plo' || this._gameType === 'nlh4')
-                seat.cards = [this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!];
-            else if(this._gameType === 'plo5')
-                seat.cards = [this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!];
-            else if(this._gameType === 'plo6')
-                seat.cards = [this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!, this._deck!.pop()!];
+        [...this.getPlayingSeats()].forEach(seat => {
+            this.dealPlayerCard(seat);
             seat.bet ??= 0;
             seat.ante ??= 0;
             seat.lastBet ??= 0;
@@ -255,7 +321,7 @@ export class Round {
         if (this._state === RoundState.None) {
             return this._state;
         }
-        else if (this.checkOnePlayerRemaining() && !this.checkPendingSidebet()) {
+        else if (this.checkOnePlayerRemaining()) {
             this.roundShowdown();
             return this._state;
         }
@@ -273,7 +339,7 @@ export class Round {
                 this.roundShowdown();
             }
 
-            if (this.checkAllPlayersAllIn() && !this.checkPendingSidebet())
+            if (this.checkAllPlayersAllIn())
                 this._turn = undefined;
 
             return this._state;
@@ -300,7 +366,7 @@ export class Round {
         const seat = this._seats[this.turn!];
 
         let canRaise = true, minRaise: number | undefined, maxRaise: number | undefined;
-        let call = round2(this._lastBet! - seat.bet!);
+        let call = floor4(this._minBet! - seat.bet!);
 
         if (!this._bbBeted && call < this._bigBlind!)
             call = this._bigBlind!
@@ -323,7 +389,7 @@ export class Round {
 
         if (canRaise) {
             if(this._gameType === 'plo' || this._gameType === 'plo5' || this._gameType === 'plo6') {
-                maxRaise = this._pot;
+                maxRaise = this._pot + 2 * call;
             }
             else {
                 maxRaise = seat.money!;
@@ -333,8 +399,9 @@ export class Round {
                 minRaise = seat.money!;
                 maxRaise = seat.money!;
             }
-
-            minRaise = round2(minRaise!);
+             
+            minRaise = floor4(minRaise!);
+            maxRaise = floor4(maxRaise!);
         }
 
         const actions: Action[] = [];
@@ -357,17 +424,18 @@ export class Round {
     public addAnte(index: number, amount: number, isAllinAnte: boolean) {
         const seat = this._seats[index];
 
-        amount = round2(amount);
-        seat.ante = round2((seat.ante ?? 0) + amount);
-
+        amount = floor4(amount);
+        seat.ante = floor4((seat.ante ?? 0) + amount);
+        seat.lastAction = "ante";
         if (isAllinAnte) {
             seat.lastAction = 'allin';
         }
     }
 
-    public sidebet(index: number, isSidebet: boolean) {
-        const seat = this._seats[index];
-        seat.isSidebet = isSidebet;
+    public removeAnteAction(){
+        this._seats.forEach(seat => {
+            seat.lastAction = undefined;
+        });
     }
 
     public bet(index: number, amount: number, action?: Action) {
@@ -375,12 +443,13 @@ export class Round {
         if (!isPlayingSeat(seat))
             return false;
 
-        amount = round2(amount);
+        amount = floor4(amount);      
 
         if (amount >= this._bigBlind!) this._bbBeted = true;
 
-        const call = round2((this._lastBet ?? 0) - (seat.bet ?? 0));
-        if (seat.money! < call && amount < seat.money!) { // insufficient call, not allin
+        const call = floor4((this._minBet ?? 0) - (seat.bet ?? 0));
+         
+        if (floor4(seat.money!) < call && amount < floor4(seat.money!)) { // insufficient call, not allin
             return false;
         }
 
@@ -392,8 +461,8 @@ export class Round {
             else if (amount > call)
                 action = 'raise';
         }
-
-        if (amount >= seat.money!) {
+          
+        if (amount >= floor4(seat.money!)) {
             action = 'allin';
             amount = seat.money!;
 
@@ -404,11 +473,13 @@ export class Round {
         }
 
         if (action === 'raise') {
+
             if (amount <= call)
                 return false;
 
             const legalRaise = Math.max(this._legalRaise ?? 0, this._bigBlind!);
-            if (amount - call < legalRaise && amount < seat.money!) { // insufficient raise, not allin
+
+            if (floor4(amount - call) < legalRaise && amount <  floor4(seat.money!)) { // insufficient raise, not allin
                 return false;
             }
 
@@ -421,20 +492,31 @@ export class Round {
             this._seatOfRaisedBySmall = undefined;
         }
 
-        const raise = round2(amount - call);
+        const raise = floor4(amount - call);
         this._legalRaise = Math.max(this._legalRaise ?? 0, this._bigBlind!, raise);
 
         seat.lastAction = action;
-        seat.lastBet = round2((seat.lastBet ?? 0) + amount);
+        seat.lastActionState = this.state;
+        seat.lastBet = floor4((seat.lastBet ?? 0) + amount);
 
-        seat.bet = round2((seat.bet ?? 0) + amount);
-        seat.money = round2(seat.money! - amount);
-
-        this._lastBet = Math.max(this._lastBet ?? 0, seat.bet);
-        this._pot = round2(this._pot! + amount);
-        this._streetPot = round2(this._streetPot! + amount);
+        seat.bet = floor4((seat.bet ?? 0) + amount);
+        seat.money = floor4(seat.money! - amount);
+        
+        this._minBet = Math.max(this._minBet ?? 0, seat.bet);
+        this._pot = floor4(this._pot! + amount);
+        this._streetPot = floor4(this._streetPot! + amount);
+        this.setMinBet();
 
         return true;
+    }
+
+    protected setMinBet(){        
+        var playersMaxBet = Math.max(...this.getPlayingSeats().map(player=> player.bet!));
+        if(this.state === RoundState.PreFlop && this.isAllPlayersAllIn() && this._seats[this.seatOfBigBlind!]?.bet! <  this._seats[this.seatOfSmallBlind!]?.bet! && playersMaxBet < this._minBet!)
+		   {
+				console.log(`if all player do allIn less than minBet then update minBet to max bet players`);
+				this._minBet = playersMaxBet;
+		   }
     }
 
     public fold(index: number) {
@@ -444,6 +526,24 @@ export class Round {
 
         seat.fold = true;
         seat.lastAction = 'fold';
+
+        this.setMinBet();
+
+    }
+
+    public dealExtraCards(state: number) {
+        if(this._cards!.length > 4)
+            return true;
+        
+        switch(state) {
+            case RoundState.Flop:
+                this.dealCards(3); break;
+            case RoundState.Turn:
+                this.dealCards(1); break;
+            case RoundState.River:
+                this.dealCards(1); break;
+            default: break;
+        }
     }
 
     private roundFlop() {
@@ -468,6 +568,7 @@ export class Round {
     }
 
     private setState(state: RoundState) {
+        this._prevState = this._state;
         this._state = state;
 
         this._legalRaise = 0;
@@ -486,18 +587,18 @@ export class Round {
     }
 
     private dealCards(numberOfCards: number) {
-        if (this._options.randomDeal)
-            this._deck = shuffle(this._deck!); // randomise rest cards in fly on
-        if (this._options.burnCard)
-            this._deck!.pop(); //Burn a card
+
+        if(!this._shuffleKey)
+        {
+            if (this._options.randomDeal)
+                this._deck = shuffle(this._deck!); // randomise rest cards in fly on
+            if (this._options.burnCard)
+                this._deck!.pop(); //Burn a card
+        }
 
         for (let i = 0; i < numberOfCards; ++i) {
             this._cards!.push(this._deck!.pop()!);
         }
-    }
-
-    public checkPendingSidebet() {
-        return this.getPlayingSeats().filter(seat => seat.isSidebet).length > 0;
     }
 
     public checkOnePlayerRemaining() {
@@ -516,7 +617,7 @@ export class Round {
     public checkAllPlayersBet() {
         return this.getPlayingSeats().every(seat => seat.lastAction === 'allin' ||
             (seat.fold ?? false) ||
-            (seat.bet === this._lastBet && (seat.lastAction === 'check' || seat.lastAction === 'call' || seat.lastAction === 'raise')));
+            (equal(seat.bet, this._minBet) && (seat.lastAction === 'check' || seat.lastAction === 'call' || seat.lastAction === 'raise')));
     }
 
     public checkAllPlayersAllIn() {
@@ -529,17 +630,33 @@ export class Round {
         seats.forEach(seat => {
             if (seat.lastAction === 'allin' || (seat.fold ?? false))
                 ++allins;
-            else if (seat.bet === this._lastBet)
+            else if (equal(seat.bet, this._minBet))
                 ++bets;
         });
         return seats.length === allins || (bets === 1 && (allins + bets === seats.length));
+    }
+
+    public isAllPlayersAllIn(){
+
+        if (this.checkOnePlayerRemaining()) {
+            return false;
+        }
+
+        const seats = this.getPlayingSeats();
+        let allins = 0;
+        seats.forEach(seat => {
+            if (seat.lastAction === 'allin' || (seat.fold ?? false))
+                ++allins;
+        });
+
+        return seats.length === allins + 1;
     }
 
     public checkAllPlayersFold() {
         return this.getPlayingSeats().every(seat => (seat.fold ?? false));
     }
 
-    public calculatePots() {
+    public calculatePots(returnedSidebet: boolean) {
         let ante = this._pendingAnte!;
 
         const players = this.getPlayingSeats()
@@ -596,7 +713,7 @@ export class Round {
                     pot.seats.push(player.seat);
             });
             if (pot.amount > 0) {
-                pot.amount = round2(pot.amount + ante);
+                pot.amount = floor4(pot.amount + ante);
                 pots.push(pot);
                 ante = 0;
             }
@@ -613,7 +730,7 @@ export class Round {
                 pot.seats.push(player.seat);
         });
         if (pot.amount > 0) {
-            pot.amount = round2(pot.amount + ante);
+            pot.amount = floor4(pot.amount + ante);
             pots.push(pot);
             ante = 0;
         }
@@ -622,16 +739,23 @@ export class Round {
         pots.forEach(pot => {
             this._pot! += pot.amount;
         });
+        
+        const lastPot = pots[pots.length - 1];
 
-        return pots;
+        if (returnedSidebet) {
+            pots.pop();
+            this._pot! -= lastPot.amount;
+        }
+        
+        return { pots, shouldReturn: lastPot.seats.length === 1 && (allinAntes.length > 0 || allinBets.length > 0) };
     }
 
-    getReturnBet(pots: any) {
+    getReturnBet(pots: any, shouldReturn: boolean) {
         let returnSeatIndex = undefined;
         let returnBet = undefined;
         if (pots.length > 1) {
             const lastPot = pots.pop();
-            if (lastPot?.seats.length! == 1) {
+            if (shouldReturn) {
                 returnSeatIndex = lastPot?.seats[0].index;
                 returnBet = lastPot?.amount;
             }
@@ -641,15 +765,6 @@ export class Round {
         }
 
         this._pot! -= (returnBet ?? 0);
-
-        // if (!!returnSeatIndex) {
-        //     const index = Number(returnSeatIndex);
-        //     const returnAmount = Number(returnBet);
-
-        //     const players = this.getPlayingSeats()
-        //         .filter(seat => seat.index === index)
-        //         .map(seat => seat!.bet! -= returnAmount)
-        // }
 
         return {
             returnSeatIndex,
